@@ -1,0 +1,264 @@
+# Names-only seed roster, sourced from https://arise-ai.org/team.
+# Every entry starts unverified (no OpenAlex ID). As each researcher's OpenAlex
+# author ID is confirmed, promote them into config/roster.yaml with
+# verification_status effectively resolved (openalex_id set, active: true).
+#
+# David Wu and David JH Wu are two distinct people on the team and are kept
+# as separate entries.
+researchers:
+  - id: ethan_goh
+    name: Ethan Goh
+    openalex_id: null
+    verification_status: unverified
+  - id: adam_rodman
+    name: Adam Rodman
+    openalex_id: null
+    verification_status: unverified
+  - id: jonathan_h_chen
+    name: Jonathan H Chen
+    openalex_id: null
+    verification_status: unverified
+  - id: arjun_manrai
+    name: Arjun Manrai
+    openalex_id: null
+    verification_status: unverified
+  - id: eric_horvitz
+    name: Eric Horvitz
+    openalex_id: null
+    verification_status: unverified
+  - id: neera_ahuja
+    name: Neera Ahuja
+    openalex_id: null
+    verification_status: unverified
+  - id: vishnu_ravi
+    name: Vishnu Ravi
+    openalex_id: null
+    verification_status: unverified
+  - id: jason_hom
+    name: Jason Hom
+    openalex_id: null
+    verification_status: unverified
+  - id: david_wu
+    name: David Wu
+    openalex_id: null
+    verification_status: unverified
+  - id: chase_walton
+    name: Chase Walton
+    openalex_id: null
+    verification_status: unverified
+  - id: fateme_nateghi
+    name: Fateme Nateghi
+    openalex_id: null
+    verification_status: unverified
+  - id: laura_wegner
+    name: Laura Wegner
+    openalex_id: null
+    verification_status: unverified
+  - id: kathleen_lacar
+    name: Kathleen Lacar
+    openalex_id: null
+    verification_status: unverified
+  - id: anastasia_perez_ternent
+    name: Anastasia Perez Ternent
+    openalex_id: null
+    verification_status: unverified
+  - id: emily_tat
+    name: Emily Tat
+    openalex_id: null
+    verification_status: unverified
+  - id: liam_mccoy
+    name: Liam McCoy
+    openalex_id: null
+    verification_status: unverified
+  - id: arnie_milstein
+    name: Arnie Milstein
+    openalex_id: null
+    verification_status: unverified
+  - id: laura_zwaan
+    name: Laura Zwaan
+    openalex_id: null
+    verification_status: unverified
+  - id: peter_brodeur
+    name: Peter Brodeur
+    openalex_id: null
+    verification_status: unverified
+  - id: cathy_liu
+    name: Cathy Liu
+    openalex_id: null
+    verification_status: unverified
+  - id: julia_lin
+    name: Julia Lin
+    openalex_id: null
+    verification_status: unverified
+  - id: mahbuba_tusty
+    name: Mahbuba Tusty
+    openalex_id: null
+    verification_status: unverified
+  - id: john_emmett_worth
+    name: John-Emmett Worth
+    openalex_id: null
+    verification_status: unverified
+  - id: alice_zheng
+    name: Alice Zheng
+    openalex_id: null
+    verification_status: unverified
+  - id: andrew_parsons
+    name: Andrew Parsons
+    openalex_id: null
+    verification_status: unverified
+  - id: chuk_anyaegbuna
+    name: Chuk Anyaegbuna
+    openalex_id: null
+    verification_status: unverified
+  - id: ivan_lopez
+    name: Ivan Lopez
+    openalex_id: null
+    verification_status: unverified
+  - id: luyang_luo
+    name: Luyang Luo
+    openalex_id: null
+    verification_status: unverified
+  - id: irene_li
+    name: Irene Li
+    openalex_id: null
+    verification_status: unverified
+  - id: joel_koh
+    name: Joel Koh
+    openalex_id: null
+    verification_status: unverified
+  - id: selin_everett
+    name: Selin Everett
+    openalex_id: null
+    verification_status: unverified
+  - id: thomas_buckley
+    name: Thomas Buckley
+    openalex_id: null
+    verification_status: unverified
+  - id: john_havlik
+    name: John Havlik
+    openalex_id: null
+    verification_status: unverified
+  - id: austin_schoeffler
+    name: Austin Schoeffler
+    openalex_id: null
+    verification_status: unverified
+  - id: priyank_jain
+    name: Priyank Jain
+    openalex_id: null
+    verification_status: unverified
+  - id: adi_badhwar
+    name: Adi Badhwar
+    openalex_id: null
+    verification_status: unverified
+  - id: go_minjoung
+    name: Go Minjoung
+    openalex_id: null
+    verification_status: unverified
+  - id: stephen_ma
+    name: Stephen Ma
+    openalex_id: null
+    verification_status: unverified
+  - id: daniel_morgan
+    name: Daniel Morgan
+    openalex_id: null
+    verification_status: unverified
+  - id: brian_han
+    name: Brian Han
+    openalex_id: null
+    verification_status: unverified
+  - id: rebecca_handler
+    name: Rebecca Handler
+    openalex_id: null
+    verification_status: unverified
+  - id: daniel_yang
+    name: Daniel Yang
+    openalex_id: null
+    verification_status: unverified
+  - id: spencer_dorn
+    name: Spencer Dorn
+    openalex_id: null
+    verification_status: unverified
+  - id: kevin_schulman
+    name: Kevin Schulman
+    openalex_id: null
+    verification_status: unverified
+  - id: kanav_chopra
+    name: Kanav Chopra
+    openalex_id: null
+    verification_status: unverified
+  - id: zahir_kanjee
+    name: Zahir Kanjee
+    openalex_id: null
+    verification_status: unverified
+  - id: samantha_wang
+    name: Samantha Wang
+    openalex_id: null
+    verification_status: unverified
+  - id: david_jh_wu
+    name: David JH Wu
+    openalex_id: null
+    verification_status: unverified
+  - id: eric_strong
+    name: Eric Strong
+    openalex_id: null
+    verification_status: unverified
+  - id: rob_gallo
+    name: Rob Gallo
+    openalex_id: null
+    verification_status: unverified
+  - id: hannah_kerman
+    name: Hannah Kerman
+    openalex_id: null
+    verification_status: unverified
+  - id: kameron_black
+    name: Kameron Black
+    openalex_id: null
+    verification_status: unverified
+  - id: saloni_maharaj
+    name: Saloni Maharaj
+    openalex_id: null
+    verification_status: unverified
+  - id: nicholas_marshall
+    name: Nicholas Marshall
+    openalex_id: null
+    verification_status: unverified
+  - id: julie_lee
+    name: Julie Lee
+    openalex_id: null
+    verification_status: unverified
+  - id: poonam_hosamani
+    name: Poonam Hosamani
+    openalex_id: null
+    verification_status: unverified
+  - id: andre_kumar
+    name: Andre Kumar
+    openalex_id: null
+    verification_status: unverified
+  - id: josephine_cool
+    name: Josephine Cool
+    openalex_id: null
+    verification_status: unverified
+  - id: jason_freed
+    name: Jason Freed
+    openalex_id: null
+    verification_status: unverified
+  - id: laura_holdsworth
+    name: Laura Holdsworth
+    openalex_id: null
+    verification_status: unverified
+  - id: bryan_bunning
+    name: Bryan Bunning
+    openalex_id: null
+    verification_status: unverified
+  - id: jasmine_ong
+    name: Jasmine Ong
+    openalex_id: null
+    verification_status: unverified
+  - id: sarita_khemani
+    name: Sarita Khemani
+    openalex_id: null
+    verification_status: unverified
+  - id: sai_balasubramanian
+    name: Sai Balasubramanian
+    openalex_id: null
+    verification_status: unverified

@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Local verified roster — real OpenAlex IDs go here once confirmed, never committed.
+config/roster.yaml
