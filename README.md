@@ -96,6 +96,55 @@ repair. Publications the relevance filter marked `exclude` are never sent to
 Notion. A Notion failure on one publication is reported and does not stop
 the rest of the run.
 
+## Scheduled runs (GitHub Actions)
+
+`.github/workflows/research-radar.yml` runs the full pipeline — publication
+discovery, Notion upsert, then summary/draft generation — once a day, and
+can also be triggered manually from the Actions tab (`workflow_dispatch`).
+
+### Required repository secrets
+
+Configure these under **Settings → Secrets and variables → Actions**. CI
+never reads or commits `.env` — it is gitignored and only used for local
+development; secrets are injected as environment variables from GitHub's
+secret store instead:
+
+- `NOTION_TOKEN`
+- `NOTION_DATA_SOURCE_ID`
+- `ANTHROPIC_API_KEY`
+- `ANTHROPIC_MODEL`
+
+### What each run does
+
+1. Installs the package (`pip install -e ".[dev]"`), then runs
+   `ruff check .`, `ruff format --check .`, and `pytest`. A lint or test
+   failure stops the run before anything touches Notion or Anthropic.
+2. `scripts/run_roster.py --roster config/roster.yaml --days-back 14
+   --write-notion`. The 14-day lookback intentionally overlaps every
+   previous run — Notion's canonical-key upsert (see above) makes reruns
+   idempotent, so the overlap adds resilience to a missed or failed run
+   rather than creating duplicates.
+3. `scripts/generate_drafts.py --limit 10 --write-notion`. Generates
+   internal summaries and draft social posts for up to 10 eligible rows and
+   writes them to Notion as drafts only. This workflow never approves,
+   schedules, or publishes anything — every item still requires human
+   review in Notion.
+
+### Operational notes
+
+- The schedule runs at 16:00 UTC. GitHub Actions cron is always UTC and
+  does not shift for daylight saving, so this is 8:00am
+  America/Los_Angeles (PST, Nov-Mar) / 9:00am America/Los_Angeles (PDT,
+  Mar-Nov).
+- A single `concurrency` group (`research-radar`) queues a new run behind
+  an in-progress one instead of cancelling it, so two runs can never write
+  to Notion at the same time.
+- The job has a 30-minute timeout.
+- Any failure — lint, test, OpenAlex, Notion, or Anthropic — fails the job
+  and is visible in the Actions run log and status; nothing is swallowed.
+- Secrets are only ever referenced via `${{ secrets.* }}` / environment
+  variables; no step prints them.
+
 ## Testing and linting
 
 ```bash

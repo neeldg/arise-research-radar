@@ -1,0 +1,77 @@
+name: Research Radar
+
+# Scheduled + manually-triggerable run of the ARISE Research Radar pipeline:
+# OpenAlex roster discovery -> Notion upsert -> draft generation. Never
+# publishes anything -- every generated item lands in Notion for human
+# review (see CLAUDE.md). Lint and tests must pass before any live pipeline
+# step runs, so a broken change never reaches Notion or Anthropic.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # GitHub Actions cron is always UTC and does not shift for daylight
+    # saving. 16:00 UTC = 8:00am America/Los_Angeles (PST, Nov-Mar) /
+    # 9:00am America/Los_Angeles (PDT, Mar-Nov).
+    - cron: "0 16 * * *"
+
+# A new run (scheduled or manual) is queued behind an in-progress one rather
+# than cancelling it, so two runs can never write to Notion at the same time
+# and an in-progress write is never killed mid-way.
+concurrency:
+  group: research-radar
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      NOTION_DATA_SOURCE_ID: ${{ secrets.NOTION_DATA_SOURCE_ID }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_MODEL: ${{ secrets.ANTHROPIC_MODEL }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install package (with dev dependencies)
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff check)
+        run: ruff check .
+
+      - name: Format check (ruff format)
+        run: ruff format --check .
+
+      - name: Run tests
+        run: pytest
+
+      # 14-day lookback intentionally overlaps every previous run. Notion's
+      # canonical-key upsert (src/arise_radar/sinks/notion.py) makes reruns
+      # idempotent, so the overlap only adds resilience to a missed run --
+      # it never creates duplicate rows.
+      - name: Discover roster publications and sync to Notion
+        run: |
+          python scripts/run_roster.py \
+            --roster config/roster.yaml \
+            --days-back 14 \
+            --write-notion
+
+      # Generates internal summaries and draft social posts for eligible
+      # rows and writes them to Notion (page body + preview property) as
+      # drafts only -- never Approved, never published, always left for
+      # human review.
+      - name: Generate summaries and social drafts
+        run: |
+          python scripts/generate_drafts.py \
+            --limit 10 \
+            --write-notion
