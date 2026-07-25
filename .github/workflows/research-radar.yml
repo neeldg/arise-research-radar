@@ -63,7 +63,7 @@ jobs:
         run: |
           python scripts/run_roster.py \
             --roster config/roster.yaml \
-            --days-back 14 \
+            --days-back 30 \
             --write-notion
 
       # Generates internal summaries and draft social posts for eligible
