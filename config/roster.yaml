@@ -39,3 +39,123 @@ researchers:
     active: true
     identity_status: verified
     relevance_filter: none
+
+  - id: arjun_manrai
+    name: Arjun Manrai
+    openalex_id: A5036448016
+    orcid: null
+    aliases:
+      - Arjun Manrai
+    active: true
+    identity_status: verified
+    relevance_filter: none
+
+  - id: eric_horvitz
+    name: Eric Horvitz
+    openalex_id: A5043228682
+    orcid: null
+    aliases:
+      - Eric Horvitz
+    active: true
+    identity_status: verified
+    relevance_filter: none
+
+  - id: neera_ahuja
+    name: Neera Ahuja
+    openalex_id: A5041327310
+    orcid: null
+    aliases:
+      - Neera Ahuja
+    active: true
+    identity_status: verified
+    relevance_filter: none
+
+  - id: vishnu_ravi
+    name: Vishnu Ravi
+    openalex_id: A5077342977
+    orcid: null
+    aliases:
+      - Vishnu Ravi
+    active: true
+    identity_status: verified
+    relevance_filter: none
+
+  - id: jason_hom
+    name: Jason Hom
+    openalex_id: A5061093158
+    orcid: null
+    aliases:
+      - Jason Hom
+    active: true
+    identity_status: verified
+    relevance_filter: none
+
+  - id: chase_walton
+    name: Chase Walton
+    openalex_id: A5073943724
+    orcid: null
+    aliases:
+      - Chase Walton
+    active: true
+    identity_status: verified
+    relevance_filter: none
+
+  - id: fateme_nateghi
+    name: Fateme Nateghi
+    openalex_id: A5056466429
+    orcid: null
+    aliases:
+      - Fateme Nateghi
+    active: true
+    identity_status: verified
+    relevance_filter: none
+
+  - id: peter_brodeur
+    name: Peter Brodeur
+    openalex_id: A5015726003
+    orcid: null
+    aliases:
+      - Peter Brodeur
+    active: true
+    identity_status: verified
+    relevance_filter: none
+
+  - id: kathleen_lacar
+    name: Kathleen Lacar
+    openalex_id: A5093379071
+    orcid: null
+    aliases:
+      - Kathleen Lacar
+    active: true
+    identity_status: verified
+    relevance_filter: none
+
+  - id: emily_tat
+    name: Emily Tat
+    openalex_id: A5102895001
+    orcid: null
+    aliases:
+      - Emily Tat
+    active: true
+    identity_status: verified
+    relevance_filter: none
+
+  - id: liam_mccoy
+    name: Liam McCoy
+    openalex_id: A5082108649
+    orcid: null
+    aliases:
+      - Liam McCoy
+    active: true
+    identity_status: verified
+    relevance_filter: none
+
+  - id: laura_zwaan
+    name: Laura Zwaan
+    openalex_id: A5041919544
+    orcid: null
+    aliases:
+      - Laura Zwaan
+    active: true
+    identity_status: verified
+    relevance_filter: none
