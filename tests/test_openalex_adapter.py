@@ -9,6 +9,7 @@ from arise_radar.sources.openalex import (
     OpenAlexClient,
     OpenAlexError,
     fetch_researcher_publications,
+    reconstruct_abstract,
 )
 
 
@@ -148,3 +149,44 @@ def test_missing_openalex_id_raises_without_request(
 
     with pytest.raises(ValueError):
         fetch_researcher_publications(client, researcher, days_back=90)
+
+
+# --- get_work / reconstruct_abstract --------------------------------------------
+
+
+def test_get_work_fetches_single_work_by_id(
+    mock_openalex_client: Callable[..., OpenAlexClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/works/W123"
+        return httpx.Response(
+            200, json={"id": "https://openalex.org/W123", "display_name": "A Paper"}
+        )
+
+    client = mock_openalex_client(handler)
+    work = client.get_work("W123")
+
+    assert work["display_name"] == "A Paper"
+
+
+def test_reconstruct_abstract_decodes_inverted_index() -> None:
+    work = {
+        "abstract_inverted_index": {
+            "This": [0],
+            "is": [1],
+            "a": [2],
+            "test": [3],
+        }
+    }
+    assert reconstruct_abstract(work) == "This is a test"
+
+
+def test_reconstruct_abstract_handles_repeated_words() -> None:
+    work = {"abstract_inverted_index": {"the": [0, 3], "cat": [1], "sat": [2], "mat": [4]}}
+    assert reconstruct_abstract(work) == "the cat sat the mat"
+
+
+def test_reconstruct_abstract_missing_returns_none() -> None:
+    assert reconstruct_abstract({}) is None
+    assert reconstruct_abstract({"abstract_inverted_index": None}) is None

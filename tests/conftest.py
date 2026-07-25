@@ -7,6 +7,7 @@ from collections.abc import Callable
 import httpx
 import pytest
 
+from arise_radar.drafting import AnthropicClient
 from arise_radar.sinks.notion import NotionClient
 from arise_radar.sources.openalex import OpenAlexClient
 
@@ -37,5 +38,20 @@ def mock_notion_client() -> Callable[..., NotionClient]:
         http_client = httpx.Client(transport=transport, base_url="https://api.notion.com")
         kwargs.setdefault("backoff_seconds", 0)
         return NotionClient(http_client=http_client, **kwargs)
+
+    return _factory
+
+
+@pytest.fixture
+def mock_anthropic_client() -> Callable[..., AnthropicClient]:
+    """Factory for an AnthropicClient backed by httpx.MockTransport."""
+
+    def _factory(
+        handler: Callable[[httpx.Request], httpx.Response], **kwargs: object
+    ) -> AnthropicClient:
+        transport = httpx.MockTransport(handler)
+        http_client = httpx.Client(transport=transport, base_url="https://api.anthropic.com")
+        kwargs.setdefault("max_retries", 0)
+        return AnthropicClient(http_client=http_client, api_key="test-anthropic-key", **kwargs)
 
     return _factory

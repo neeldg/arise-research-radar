@@ -66,16 +66,23 @@ class OpenAlexClient:
             params["mailto"] = self._mailto
 
         while cursor:
-            payload = self._get_page({**params, "cursor": cursor})
+            payload = self._get("/works", {**params, "cursor": cursor})
             yield from payload.get("results", [])
             cursor = payload.get("meta", {}).get("next_cursor") or ""
 
-    def _get_page(self, params: dict[str, str | int]) -> dict:
+    def get_work(self, openalex_work_id: str) -> dict:
+        """Fetch a single work's full record (including abstract_inverted_index) by ID."""
+        params: dict[str, str | int] = {}
+        if self._mailto:
+            params["mailto"] = self._mailto
+        return self._get(f"/works/{openalex_work_id}", params)
+
+    def _get(self, path: str, params: dict[str, str | int]) -> dict:
         last_error: Exception | None = None
         for attempt in range(self._max_retries + 1):
             response: httpx.Response | None = None
             try:
-                response = self._client.get("/works", params=params)
+                response = self._client.get(path, params=params)
             except httpx.TransportError as exc:
                 last_error = exc
             else:
@@ -175,3 +182,19 @@ def _parse_date(raw_date: str | None) -> date | None:
     if not raw_date:
         return None
     return date.fromisoformat(raw_date)
+
+
+def reconstruct_abstract(work: dict) -> str | None:
+    """Decode OpenAlex's abstract_inverted_index back into plain text, if present."""
+    inverted_index = work.get("abstract_inverted_index")
+    if not inverted_index:
+        return None
+
+    positions: dict[int, str] = {}
+    for word, indices in inverted_index.items():
+        for index in indices:
+            positions[index] = word
+
+    if not positions:
+        return None
+    return " ".join(positions[index] for index in sorted(positions))

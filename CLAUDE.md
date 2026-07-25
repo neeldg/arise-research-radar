@@ -333,45 +333,89 @@ Do not evaluate only on items that ARISE ultimately posts.
   exclusion summary — never silently discarded), and marks ambiguous ones
   `uncertain` but still keeps them. No LLM calls.
 
+## Completed milestones (continued)
+
+* **Local test Notion sink for the roster-publication pipeline.** Notion
+  configuration (`NOTION_TOKEN`, `NOTION_DATA_SOURCE_ID`) loaded from
+  environment variables (`.env` via `python-dotenv`, working-directory-aware
+  via `find_dotenv(usecwd=True)`), never printed or logged; a typed Notion
+  sink (`src/arise_radar/sinks/notion.py`) using a small injectable HTTP
+  client mirroring the OpenAlex adapter's pattern (tests mock it via
+  `httpx.MockTransport` rather than the official `notion-client` SDK, whose
+  support for the newer "data source" API surface wasn't relied on);
+  canonical-key lookup and create-or-update (upsert): no match creates a
+  page with `Status = New`, exactly one match updates metadata while
+  preserving the existing editorial `Status` and merging the current
+  researcher into `Researchers`, more than one match is left untouched and
+  logged as a visible duplicate-key error; excluded publications are never
+  written; a Notion failure on one publication doesn't stop the run;
+  explicit CLI opt-in flags (`--write-notion`, `--notion-dry-run`, mutually
+  exclusive, default fully read-only); `scripts/setup_notion.py` to
+  provision the test database + data source from a verified parent page
+  (confirmed live: database creation and data-source-schema creation must
+  be two separate calls — `POST /v1/databases` silently ignores an inline
+  `properties` field).
+
+## Completed milestones (continued, 2)
+
+* **Notion schema migration.** A safe, idempotent, additive-only migration
+  (`scripts/update_notion_schema.py`) against the existing
+  `NOTION_DATA_SOURCE_ID`: adds `Internal Summary`, `Key Story Angle`, `Why
+  It Matters`, `Draft Social Post`, `Draft Status`, `Draft Error`, `Drafted
+  Date`, `Draft Source Basis`, `Draft Model` if they don't already exist;
+  never touches an existing property (a conflicting type is skipped and
+  reported, never overwritten); `--dry-run` makes no write requests.
+* **Canonical ARISE LinkedIn style reference.** `config/prompts/
+  arise_linkedin_example.md` (the verbatim user-supplied exemplar) and
+  `config/prompts/arise_linkedin_style.md` (distilled style principles,
+  explicitly marked as a style reference only — never a source of facts).
+
 ## Current milestone
 
-Local test Notion sink for the roster-publication pipeline.
+Paper summarization and ARISE-style LinkedIn draft generation
+(`scripts/generate_drafts.py`).
 
 Build only:
 
-* Notion configuration (`NOTION_TOKEN`, `NOTION_DATA_SOURCE_ID`) loaded from
-  environment variables, `.env` supported via `python-dotenv`; the token is
-  never printed or logged;
-* a typed Notion sink (`src/arise_radar/sinks/notion.py`) using a small
-  injectable HTTP client, mirroring the OpenAlex adapter's pattern, so tests
-  mock it via `httpx.MockTransport` rather than depending on the official
-  `notion-client` SDK's support for the newer "data source" API surface;
-* canonical-key lookup and create-or-update (upsert) behavior: no match
-  creates a page with `Status = New`; exactly one match updates metadata,
-  preserves the existing editorial `Status`, and merges the current
-  researcher into `Researchers`; more than one match is left untouched and
-  logged as a visible duplicate-key error for human repair;
-* publications the relevance filter marked `exclude` are never written to
-  Notion;
-* a Notion failure on one publication is reported and does not stop the
-  rest of the run;
-* explicit CLI opt-in flags (`--write-notion`, `--notion-dry-run`, mutually
-  exclusive) — the default remains fully read-only, no Notion request of
-  any kind;
-* mocked tests (no live Notion or OpenAlex calls);
-* readable run summaries.
+* select eligible Notion rows (`Status = New`, `Source = OpenAlex`, `Draft
+  Status` empty/"Not Started", or any non-"Approved" status with `--force`;
+  `Draft Status = Approved` is never overwritten, with or without `--force`);
+* re-fetch full OpenAlex metadata + abstract (`OpenAlexClient.get_work`,
+  `reconstruct_abstract` decoding `abstract_inverted_index`) for each
+  selected row;
+* call the Anthropic API (official `anthropic` SDK, `claude-opus-5`,
+  structured output via `client.messages.parse`) for exactly 5 fields:
+  `internal_summary`, `key_story_angle`, `why_it_matters`,
+  `draft_social_post`, `limitations`; `source_basis` (`OpenAlex Abstract` vs
+  `Metadata Only`) and `model` are recorded by the pipeline itself, not
+  asked of the model — they're pipeline facts, not judgments;
+* the ARISE LinkedIn example is passed as a style reference only, with an
+  explicit instruction never to reuse its facts, numbers, or claims — every
+  factual detail in the draft must come from that paper's own source
+  material;
+* on generation failure (including a safety `refusal`), retain the item,
+  leave content fields untouched, store the error in `Draft Error`, set
+  `Draft Status = Needs Attention` — never silently discard;
+* only draft-* properties are ever written — `Status`, `Researchers`,
+  `Editorial Notes`, and publication metadata are never mentioned in the
+  write payload, so they're preserved by construction;
+* `--limit` (default 3), `--canonical-key`, `--dry-run`, `--write-notion`,
+  `--force`; every mode actually calls Anthropic and generates real
+  content — `--write-notion` only gates whether it's persisted;
+* mocked tests for all three external services (no live Notion, OpenAlex,
+  or Anthropic calls in tests).
 
 Do not currently build:
 
-* Anthropic or other LLM calls,
-* internal summaries or social-post drafting,
 * citation monitoring,
 * media monitoring,
 * GitHub Actions,
 * broad fuzzy deduplication,
 * automatic publishing,
-* or writes to any production Notion database (this milestone targets a
-  local test data source only).
+* human approval workflow beyond the existing `Draft Status` select (still
+  manual, in Notion),
+* or writes to any production Notion database (still targets the local
+  test data source only).
 
 ## Current success criterion
 
@@ -398,6 +442,14 @@ without ever writing until `--write-notion` is passed:
 ```bash
 python scripts/run_roster.py --roster config/roster.yaml --days-back 730 --notion-dry-run
 python scripts/run_roster.py --roster config/roster.yaml --days-back 730 --write-notion
+```
+
+The schema migration should be safe to run against that same data source at
+any time, including repeatedly:
+
+```bash
+python scripts/update_notion_schema.py --dry-run
+python scripts/update_notion_schema.py
 ```
 
 Tests must not make live network requests.

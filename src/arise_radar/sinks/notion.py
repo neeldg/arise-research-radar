@@ -19,14 +19,31 @@ import httpx
 from dotenv import find_dotenv, load_dotenv
 from pydantic import BaseModel, SecretStr
 
+from arise_radar.drafting import DraftContent
 from arise_radar.models import NormalizedPublication
 from arise_radar.relevance import RelevanceDecision
+
+NOTION_APPROVED_DRAFT_STATUS = "Approved"
+NOTION_DRAFTED_STATUS = "Drafted"
+NOTION_NEEDS_ATTENTION_STATUS = "Needs Attention"
 
 DEFAULT_NOTION_BASE_URL = "https://api.notion.com"
 NOTION_API_VERSION = "2025-09-03"
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 NOTION_SOURCE_VALUE = "OpenAlex"
 NOTION_NEW_STATUS = "New"
+
+# Marks the start of the pipeline-owned generated-draft section in a page's body.
+# Deliberately long and distinctive so it is never mistaken for human-authored
+# content. Everything from this block to the end of the page is treated as
+# pipeline-owned and replaced wholesale on rerun; everything before it is human
+# content and is never read, queried, or touched.
+GENERATED_SECTION_MARKER = (
+    "ARISE Research Radar — Generated Draft (auto-managed; do not edit below this line)"
+)
+MAX_RICH_TEXT_LENGTH = 2000
+DRAFT_PREVIEW_MAX_LENGTH = 500
+MAX_BLOCKS_PER_APPEND = 100
 
 # Maps internal RelevanceDecision.status ("keep"/"uncertain"/"exclude") to the
 # human-readable Notion select option labels defined by scripts/setup_notion.py.
@@ -53,6 +70,18 @@ class NotionProperties:
     RELEVANCE_STATUS = "Relevance Status"
     SYSTEM_NOTES = "System Notes"
     EDITORIAL_NOTES = "Editorial Notes"
+
+    # Paper summarization / draft-generation properties (schema only for now —
+    # see scripts/update_notion_schema.py; no code writes these yet).
+    INTERNAL_SUMMARY = "Internal Summary"
+    KEY_STORY_ANGLE = "Key Story Angle"
+    WHY_IT_MATTERS = "Why It Matters"
+    DRAFT_SOCIAL_POST = "Draft Social Post"
+    DRAFT_STATUS = "Draft Status"
+    DRAFT_ERROR = "Draft Error"
+    DRAFTED_DATE = "Drafted Date"
+    DRAFT_SOURCE_BASIS = "Draft Source Basis"
+    DRAFT_MODEL = "Draft Model"
 
 
 class NotionConfigError(RuntimeError):
@@ -182,6 +211,9 @@ class NotionClient:
                 return block
         return None
 
+    def get_data_source(self, data_source_id: str) -> dict:
+        return self._request("GET", f"/v1/data_sources/{data_source_id}")
+
     def query_data_source_by_canonical_key(
         self, data_source_id: str, canonical_key: str
     ) -> list[dict]:
@@ -193,6 +225,47 @@ class NotionClient:
         }
         payload = self._request("POST", f"/v1/data_sources/{data_source_id}/query", json=body)
         return payload.get("results", [])
+
+    def query_eligible_drafts(
+        self, data_source_id: str, *, limit: int, force: bool = False
+    ) -> list[dict]:
+        """Query New/OpenAlex rows not yet Approved, capped at `limit`.
+
+        Without `force`, only rows with no Draft Status (or "Not Started") are
+        returned. With `force`, rows already "Drafted"/"Needs Attention" are
+        included too — "Approved" is always excluded, with or without `force`.
+        """
+        if force:
+            draft_status_filter = {
+                "property": NotionProperties.DRAFT_STATUS,
+                "select": {"does_not_equal": NOTION_APPROVED_DRAFT_STATUS},
+            }
+        else:
+            draft_status_filter = {
+                "or": [
+                    {"property": NotionProperties.DRAFT_STATUS, "select": {"is_empty": True}},
+                    {
+                        "property": NotionProperties.DRAFT_STATUS,
+                        "select": {"equals": "Not Started"},
+                    },
+                ]
+            }
+
+        body = {
+            "filter": {
+                "and": [
+                    {"property": NotionProperties.STATUS, "select": {"equals": NOTION_NEW_STATUS}},
+                    {
+                        "property": NotionProperties.SOURCE,
+                        "select": {"equals": NOTION_SOURCE_VALUE},
+                    },
+                    draft_status_filter,
+                ]
+            },
+            "page_size": limit,
+        }
+        payload = self._request("POST", f"/v1/data_sources/{data_source_id}/query", json=body)
+        return payload.get("results", [])[:limit]
 
     # --- writes ---------------------------------------------------------------
 
@@ -224,6 +297,19 @@ class NotionClient:
         }
         return self._request("POST", "/v1/data_sources", json=body)
 
+    def update_data_source(self, data_source_id: str, properties: dict) -> dict:
+        """PATCH only the given properties onto an existing data source's schema.
+
+        Mirrors the classic Notion database-update contract: properties included
+        here are added/changed; every property NOT mentioned is left untouched.
+        Callers must never include an already-existing property here unless they
+        intend to change its definition — this method has no its own safety
+        checks against that.
+        """
+        return self._request(
+            "PATCH", f"/v1/data_sources/{data_source_id}", json={"properties": properties}
+        )
+
     def create_page(self, data_source_id: str, properties: dict) -> dict:
         body = {
             "parent": {"type": "data_source_id", "data_source_id": data_source_id},
@@ -233,6 +319,17 @@ class NotionClient:
 
     def update_page(self, page_id: str, properties: dict) -> dict:
         return self._request("PATCH", f"/v1/pages/{page_id}", json={"properties": properties})
+
+    def append_block_children(self, block_id: str, children: list[dict]) -> dict:
+        """Notion's append-block-children endpoint is a PATCH, not a POST, despite
+        the operation being additive rather than a full replace."""
+        return self._request(
+            "PATCH", f"/v1/blocks/{block_id}/children", json={"children": children}
+        )
+
+    def delete_block(self, block_id: str) -> dict:
+        """Archives the block (Notion's DELETE semantics — recoverable from trash)."""
+        return self._request("DELETE", f"/v1/blocks/{block_id}")
 
     def _request(self, method: str, path: str, **kwargs: object) -> dict:
         last_error: Exception | None = None
@@ -462,3 +559,215 @@ def _read_multi_select(page: dict, property_name: str) -> set[str]:
     prop = (page.get("properties") or {}).get(property_name) or {}
     values = prop.get("multi_select") or []
     return {value["name"] for value in values if value.get("name")}
+
+
+# --- generic page-property readers (used by the drafting pipeline) -------------
+
+
+def read_title(page: dict, property_name: str = NotionProperties.NAME) -> str:
+    prop = (page.get("properties") or {}).get(property_name) or {}
+    return "".join(part.get("plain_text", "") for part in prop.get("title", []))
+
+
+def read_rich_text(page: dict, property_name: str) -> str | None:
+    prop = (page.get("properties") or {}).get(property_name) or {}
+    parts = prop.get("rich_text") or []
+    text = "".join(part.get("plain_text", "") for part in parts)
+    return text or None
+
+
+def read_select(page: dict, property_name: str) -> str | None:
+    prop = (page.get("properties") or {}).get(property_name) or {}
+    select = prop.get("select")
+    return select.get("name") if select else None
+
+
+def read_multi_select_names(page: dict, property_name: str) -> list[str]:
+    return sorted(_read_multi_select(page, property_name))
+
+
+# --- draft property builders ----------------------------------------------------
+
+
+def _draft_preview(text: str, max_length: int = DRAFT_PREVIEW_MAX_LENGTH) -> str:
+    """A short property-level preview of the draft post. The complete draft lives
+    in the page body (see build_generated_section_blocks) — this exists only so
+    the row is scannable from the database table view."""
+    if not text:
+        return ""
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 1].rstrip() + "…"
+
+
+def build_draft_success_properties(
+    content: DraftContent, *, source_basis: str, model_name: str, drafted_date: date
+) -> dict:
+    """Properties for a successful draft generation.
+
+    The complete internal summary, key story angle, why-it-matters, and social
+    post text are written to the page body (build_generated_section_blocks),
+    not here — only a short Draft Social Post preview plus the pipeline-facts
+    properties are set. Status, Researchers, Editorial Notes, and publication
+    metadata are never mentioned here — they are preserved by construction, the
+    same pattern used by the roster upsert above.
+    """
+    return {
+        NotionProperties.DRAFT_SOCIAL_POST: _rich_text_value(
+            _draft_preview(content.draft_social_post)
+        ),
+        NotionProperties.DRAFT_STATUS: {"select": {"name": NOTION_DRAFTED_STATUS}},
+        NotionProperties.DRAFT_ERROR: _rich_text_value(""),
+        NotionProperties.DRAFTED_DATE: _date_value(drafted_date),
+        NotionProperties.DRAFT_SOURCE_BASIS: {"select": {"name": source_basis}},
+        NotionProperties.DRAFT_MODEL: _rich_text_value(model_name),
+    }
+
+
+def build_draft_error_properties(*, error_message: str, drafted_date: date) -> dict:
+    """Properties for a failed draft generation.
+
+    Per the project's failure-behavior rule: retain the item, leave the
+    generated content fields untouched, store the error, and mark it as
+    needing attention — never silently discard.
+    """
+    return {
+        NotionProperties.DRAFT_STATUS: {"select": {"name": NOTION_NEEDS_ATTENTION_STATUS}},
+        NotionProperties.DRAFT_ERROR: _rich_text_value(error_message),
+        NotionProperties.DRAFTED_DATE: _date_value(drafted_date),
+    }
+
+
+# --- generated-draft page body (blocks) -----------------------------------------
+#
+# The full draft (social post, internal summary, key story angle, why-it-matters,
+# generation metadata) lives in the page body as blocks, not in properties — a
+# single rich_text property value is capped by Notion well below what a real
+# draft needs, and truncating it silently would violate the project's
+# never-silently-discard rule. Every block below the marker heading is
+# pipeline-owned; every block above it (including Editorial Notes, which is a
+# property, not a block, and is never touched by this module) is human content.
+
+
+def _text_object(content: str) -> dict:
+    return {"type": "text", "text": {"content": content}}
+
+
+def _chunk_text(text: str, max_length: int = MAX_RICH_TEXT_LENGTH) -> list[str]:
+    """Split text into pieces no longer than max_length, without truncating
+    anything — every character of the input appears in the output."""
+    if not text:
+        return [""]
+    return [text[i : i + max_length] for i in range(0, len(text), max_length)]
+
+
+def _paragraph_block(text: str) -> dict:
+    rich_text = [_text_object(text)] if text else []
+    return {"type": "paragraph", "paragraph": {"rich_text": rich_text}}
+
+
+def _paragraph_blocks(text: str) -> list[dict]:
+    """One paragraph block per blank-line-delimited paragraph (preserving
+    paragraph breaks), with any paragraph longer than MAX_RICH_TEXT_LENGTH split
+    across additional paragraph blocks so no single rich-text `text.content`
+    value ever exceeds the limit. Never truncates."""
+    if not text:
+        return [_paragraph_block("")]
+    blocks: list[dict] = []
+    for paragraph in text.split("\n\n"):
+        blocks.extend(_paragraph_block(chunk) for chunk in _chunk_text(paragraph))
+    return blocks
+
+
+def _heading_block(level: int, text: str) -> dict:
+    key = f"heading_{level}"
+    return {"type": key, key: {"rich_text": [_text_object(text)]}}
+
+
+def _bulleted_list_item(text: str) -> dict:
+    return {"type": "bulleted_list_item", "bulleted_list_item": {"rich_text": [_text_object(text)]}}
+
+
+def build_generated_section_blocks(
+    content: DraftContent, *, source_basis: str, model_name: str, drafted_date: date
+) -> list[dict]:
+    """The complete pipeline-owned page-body section for a successful draft.
+
+    Starts with the marker block used by replace_generated_section to find and
+    remove this same section on rerun.
+    """
+    internal_summary = content.internal_summary
+    if content.limitations:
+        internal_summary = f"{internal_summary}\n\nLimitations: {content.limitations}"
+
+    blocks: list[dict] = [
+        _heading_block(3, GENERATED_SECTION_MARKER),
+        {"type": "divider", "divider": {}},
+        _heading_block(1, "Draft Social Post"),
+        *_paragraph_blocks(content.draft_social_post),
+        _heading_block(1, "Internal Summary"),
+        *_paragraph_blocks(internal_summary),
+        _heading_block(1, "Key Story Angle"),
+        *_paragraph_blocks(content.key_story_angle),
+        _heading_block(1, "Why It Matters"),
+        *_paragraph_blocks(content.why_it_matters),
+        _heading_block(1, "Generation Information"),
+        _bulleted_list_item(f"Source basis: {source_basis}"),
+        _bulleted_list_item(f"Model: {model_name}"),
+        _bulleted_list_item(f"Drafted date: {drafted_date.isoformat()}"),
+    ]
+    return blocks
+
+
+def _block_plain_text(block: dict) -> str:
+    block_type = block.get("type")
+    payload = block.get(block_type) if block_type else None
+    if not isinstance(payload, dict):
+        return ""
+    return "".join(part.get("plain_text", "") for part in payload.get("rich_text") or [])
+
+
+def _is_marker_block(block: dict) -> bool:
+    return _block_plain_text(block) == GENERATED_SECTION_MARKER
+
+
+def _generated_block_ids(existing_blocks: list[dict]) -> list[str]:
+    """IDs of the previous generated section: the marker block and everything
+    after it. Blocks before the marker are human content and are never
+    returned. Generated content is always appended at the end of the page, so
+    "the marker and everything after" is exactly the previous generated
+    section, even if it was itself left partially duplicated by an earlier
+    partial failure.
+    """
+    for index, block in enumerate(existing_blocks):
+        if _is_marker_block(block):
+            return [block["id"] for block in existing_blocks[index:] if block.get("id")]
+    return []
+
+
+def _append_blocks_batched(
+    client: NotionClient, page_id: str, blocks: list[dict], batch_size: int = MAX_BLOCKS_PER_APPEND
+) -> None:
+    for i in range(0, len(blocks), batch_size):
+        client.append_block_children(page_id, blocks[i : i + batch_size])
+
+
+def replace_generated_section(client: NotionClient, page_id: str, blocks: list[dict]) -> None:
+    """Replace the pipeline-owned generated section in a page's body with `blocks`.
+
+    Appends the new section before deleting the old one. If the append fails
+    partway (raises NotionError), the old generated section — and all human
+    content — is left exactly as it was: nothing is deleted until the new
+    content is confirmed written. The worst case on a later failure (deleting
+    the old section) is old and new generated content coexisting, which is
+    visible on the page and recoverable by rerunning, never silent data loss.
+    Raises NotionError on any failure; callers must not mark the row Drafted
+    unless this returns successfully.
+    """
+    existing_blocks = list(client.list_block_children(page_id))
+    stale_block_ids = _generated_block_ids(existing_blocks)
+
+    _append_blocks_batched(client, page_id, blocks)
+
+    for block_id in stale_block_ids:
+        client.delete_block(block_id)
