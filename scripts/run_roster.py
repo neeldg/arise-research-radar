@@ -232,11 +232,22 @@ def _compute_run_summary(
     notion_enabled: bool,
 ) -> RunSummary:
     shared_author_works = sum(1 for group in grouped if len(group.researcher_names) > 1)
-    possible_version_duplicates = sum(
-        1 for group in grouped if version_matches.get(group.publication.canonical_key)
-    )
-    non_standard_research_objects = sum(
-        1 for group in grouped if not classify_work_type(group.publication).draft_eligible
+
+    duplicate_flagged = {
+        group.publication.canonical_key
+        for group in grouped
+        if version_matches.get(group.publication.canonical_key)
+    }
+    non_standard = {
+        group.publication.canonical_key
+        for group in grouped
+        if not classify_work_type(group.publication).draft_eligible
+    }
+    standard_draft_eligible_works = sum(
+        1
+        for group in grouped
+        if group.publication.canonical_key not in duplicate_flagged
+        and group.publication.canonical_key not in non_standard
     )
 
     existing_rows: int | None = None
@@ -251,8 +262,9 @@ def _compute_run_summary(
         existing_rows=existing_rows,
         proposed_new_rows=proposed_new_rows,
         shared_author_works=shared_author_works,
-        possible_version_duplicates=possible_version_duplicates,
-        non_standard_research_objects=non_standard_research_objects,
+        standard_draft_eligible_works=standard_draft_eligible_works,
+        duplicate_flagged_held_for_review=len(duplicate_flagged),
+        non_standard_held_for_review=len(non_standard),
     )
 
 

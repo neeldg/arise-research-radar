@@ -564,3 +564,171 @@ def test_no_version_duplicate_note_by_default(
 
     notes_text = created_body["properties"]["System Notes"]["rich_text"][0]["text"]["content"]
     assert "Possible version duplicate" not in notes_text
+
+
+# --- version duplicates: held for review, never auto-drafted, never auto-merged ----
+
+
+def test_version_duplicate_defaults_to_needs_attention_on_create(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    """A new row flagged as a probable version duplicate must default to
+    Needs Attention with a clear Draft Error explaining the relationship —
+    never left silently eligible for automatic scheduled drafting."""
+    created_body: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/data_sources/ds_123/query":
+            return httpx.Response(200, json={"results": []})
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            nonlocal created_body
+            created_body = json.loads(request.content)
+            return httpx.Response(200, json={"id": "page-new-1"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    client = mock_notion_client(handler)
+    note = (
+        "Possible version duplicate of: doi:10.20944/preprints202607.0060.v1 "
+        "(title similarity 0.96, shared authors: Ethan Goh)"
+    )
+
+    result = upsert_publication(
+        client,
+        "ds_123",
+        _pub(work_type="preprint"),
+        KEEP,
+        detected_date=date(2026, 1, 2),
+        version_duplicate_note=note,
+    )
+
+    assert result.action == "created"
+    props = created_body["properties"]
+    assert props["Draft Status"] == {"select": {"name": "Needs Attention"}}
+    error_text = props["Draft Error"]["rich_text"][0]["text"]["content"]
+    assert "human review" in error_text
+    assert "preprint/published-version or repository-version duplicate" in error_text
+    assert note in error_text
+    # Never merged or deleted -- still its own canonical row.
+    assert props["Canonical Key"]["rich_text"][0]["text"]["content"] == "doi:10.1000/abc"
+
+
+def test_version_duplicate_never_touches_draft_status_on_update(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    """A resync of an already-existing version-duplicate row must not
+    overwrite Draft Status/Draft Error a human or the drafting pipeline may
+    have since set (e.g. a human reviewed and manually Approved it, or
+    force-drafted it)."""
+    updated_body: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/data_sources/ds_123/query":
+            return httpx.Response(
+                200, json={"results": [_existing_page("page-1", "New", ["Ethan Goh"])]}
+            )
+        if request.method == "PATCH" and request.url.path == "/v1/pages/page-1":
+            nonlocal updated_body
+            updated_body = json.loads(request.content)
+            return httpx.Response(200, json={"id": "page-1"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    client = mock_notion_client(handler)
+    note = (
+        "Possible version duplicate of: doi:10.1/other "
+        "(title similarity 0.95, shared authors: Ethan Goh)"
+    )
+
+    result = upsert_publication(
+        client,
+        "ds_123",
+        _pub(work_type="preprint"),
+        KEEP,
+        detected_date=date(2026, 1, 2),
+        version_duplicate_note=note,
+    )
+
+    assert result.action == "updated"
+    assert "Draft Status" not in updated_body["properties"]
+    assert "Draft Error" not in updated_body["properties"]
+    # The advisory note is still refreshed in System Notes on resync.
+    notes_text = updated_body["properties"]["System Notes"]["rich_text"][0]["text"]["content"]
+    assert note in notes_text
+
+
+def test_shared_authors_preserved_on_a_version_duplicate_row(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    """A row can be both shared by multiple researchers and flagged as a
+    probable version duplicate at once -- both must be reflected correctly."""
+    created_body: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/data_sources/ds_123/query":
+            return httpx.Response(200, json={"results": []})
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            nonlocal created_body
+            created_body = json.loads(request.content)
+            return httpx.Response(200, json={"id": "page-new-1"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    client = mock_notion_client(handler)
+    note = (
+        "Possible version duplicate of: doi:10.1/other "
+        "(title similarity 0.95, shared authors: Ethan Goh)"
+    )
+
+    upsert_publication(
+        client,
+        "ds_123",
+        _pub(work_type="preprint"),
+        KEEP,
+        detected_date=date(2026, 1, 2),
+        researcher_names={"Ethan Goh", "Adam Rodman"},
+        version_duplicate_note=note,
+    )
+
+    props = created_body["properties"]
+    names = {entry["name"] for entry in props["Researchers"]["multi_select"]}
+    assert names == {"Ethan Goh", "Adam Rodman"}
+    assert props["Draft Status"] == {"select": {"name": "Needs Attention"}}
+
+
+def test_non_standard_and_version_duplicate_overlap_combines_reasons(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    """A row can be a non-standard work type AND a probable version
+    duplicate at once -- the Draft Error must explain both reasons, not just
+    one silently overwriting the other."""
+    created_body: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/data_sources/ds_123/query":
+            return httpx.Response(200, json={"results": []})
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            nonlocal created_body
+            created_body = json.loads(request.content)
+            return httpx.Response(200, json={"id": "page-new-1"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    client = mock_notion_client(handler)
+    pub = _pub(
+        title="Stanford Biodesign Digital Health Group",
+        doi="10.5281/zenodo.21358702",
+        canonical_key="doi:10.5281/zenodo.21358702",
+        work_type=None,
+    )
+    note = (
+        "Possible version duplicate of: doi:10.5281/zenodo.99999999 "
+        "(title similarity 0.97, shared authors: Ethan Goh)"
+    )
+
+    upsert_publication(
+        client, "ds_123", pub, KEEP, detected_date=date(2026, 1, 2), version_duplicate_note=note
+    )
+
+    props = created_body["properties"]
+    assert props["Draft Status"] == {"select": {"name": "Needs Attention"}}
+    error_text = props["Draft Error"]["rich_text"][0]["text"]["content"]
+    assert "dataset/repository" in error_text
+    assert "preprint/published-version or repository-version duplicate" in error_text
+    assert note in error_text

@@ -300,8 +300,8 @@ def test_shared_doi_across_two_researchers_produces_one_dry_run_row(
     assert captured.out.count("Would create") == 1
     assert "Ethan Goh" in captured.out
     assert "Adam Rodman" in captured.out
-    assert "Proposed new rows:               1" in captured.out
-    assert "Shared-author works:             1" in captured.out
+    assert "Proposed new rows:                     1" in captured.out
+    assert "Shared-author works:                   1" in captured.out
 
 
 def test_shared_doi_across_two_researchers_creates_one_page_with_both_researchers(
@@ -441,7 +441,12 @@ def test_possible_version_duplicate_is_flagged_but_both_rows_kept_separate(
     for body in created_bodies:
         notes = body["properties"]["System Notes"]["rich_text"][0]["text"]["content"]
         assert "Possible version duplicate of:" in notes
-    assert "Possible version duplicates:     2" in captured.out
+        # Held for review, not silently left eligible for automatic drafting.
+        assert body["properties"]["Draft Status"] == {"select": {"name": "Needs Attention"}}
+        error_text = body["properties"]["Draft Error"]["rich_text"][0]["text"]["content"]
+        assert "preprint/published-version or repository-version duplicate" in error_text
+        assert "human review" in error_text
+    assert "Duplicate-flagged (held for review):   2" in captured.out
 
 
 # --- non-standard research objects: retained, but not draft eligible --------------
@@ -503,7 +508,99 @@ def test_zenodo_repository_is_retained_but_not_drafted(
     props = created_body["properties"]
     assert props["Draft Status"] == {"select": {"name": "Needs Attention"}}
     assert "dataset/repository" in props["Draft Error"]["rich_text"][0]["text"]["content"]
-    assert "Non-standard research objects:   1" in captured.out
+    assert "Non-standard (held for review):        1" in captured.out
+
+
+def _overlapping_non_standard_and_duplicate_handler(request: httpx.Request) -> httpx.Response:
+    title = "Stanford Biodesign Digital Health Group"
+    authors = [{"author": {"display_name": "Ethan Goh"}}]
+    return httpx.Response(
+        200,
+        json={
+            "results": [
+                {
+                    "id": "https://openalex.org/W1",
+                    "display_name": title,
+                    "publication_date": "2026-01-01",
+                    "doi": "https://doi.org/10.5281/zenodo.1111",
+                    "authorships": authors,
+                },
+                {
+                    "id": "https://openalex.org/W2",
+                    "display_name": title,
+                    "publication_date": "2026-01-02",
+                    "doi": "https://doi.org/10.1/normal-paper",
+                    "type": "article",
+                    "authorships": authors,
+                },
+            ],
+            "meta": {"next_cursor": None},
+        },
+    )
+
+
+def test_non_standard_and_duplicate_flags_overlap_in_summary(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    mock_openalex_client: Callable[..., OpenAlexClient],
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    """One row (the Zenodo record) is both a non-standard work type and a
+    probable version duplicate of the other row at once -- both aggregate
+    counters must include it, and neither silently drops the other reason."""
+    monkeypatch.setenv("NOTION_TOKEN", "test-token")
+    monkeypatch.setenv("NOTION_DATA_SOURCE_ID", "ds_123")
+
+    roster_path = _write_single_researcher_roster(tmp_path)
+    openalex_client = mock_openalex_client(_overlapping_non_standard_and_duplicate_handler)
+    created_bodies: list[dict] = []
+
+    def notion_handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        if request.method == "POST" and request.url.path == "/v1/data_sources/ds_123/query":
+            return httpx.Response(200, json={"results": []})
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            created_bodies.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": f"page-{len(created_bodies)}"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    notion_client = mock_notion_client(notion_handler)
+
+    exit_code = main(
+        ["--roster", str(roster_path), "--write-notion"],
+        client=openalex_client,
+        notion_client=notion_client,
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert len(created_bodies) == 2
+    by_key = {
+        body["properties"]["Canonical Key"]["rich_text"][0]["text"]["content"]: body
+        for body in created_bodies
+    }
+
+    zenodo_error = by_key["doi:10.5281/zenodo.1111"]["properties"]["Draft Error"]["rich_text"][0][
+        "text"
+    ]["content"]
+    assert "dataset/repository" in zenodo_error
+    assert "preprint/published-version or repository-version duplicate" in zenodo_error
+
+    normal_error = by_key["doi:10.1/normal-paper"]["properties"]["Draft Error"]["rich_text"][0][
+        "text"
+    ]["content"]
+    assert "dataset/repository" not in normal_error
+    assert "preprint/published-version or repository-version duplicate" in normal_error
+
+    for body in created_bodies:
+        assert body["properties"]["Draft Status"] == {"select": {"name": "Needs Attention"}}
+
+    # Overlap: both counters include the Zenodo row, so they needn't be disjoint.
+    assert "Duplicate-flagged (held for review):   2" in captured.out
+    assert "Non-standard (held for review):        1" in captured.out
+    assert "Standard draft-eligible works:         0" in captured.out
 
 
 def _osf_handler(request: httpx.Request) -> httpx.Response:
@@ -619,4 +716,4 @@ def test_normal_article_remains_draft_eligible_end_to_end(
     assert exit_code == 0
     assert "Created: 1" in captured.out
     assert "Draft Status" not in created_body["properties"]
-    assert "Non-standard research objects:   0" in captured.out
+    assert "Non-standard (held for review):        0" in captured.out

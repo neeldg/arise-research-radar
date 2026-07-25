@@ -106,8 +106,9 @@ def test_format_run_summary_includes_all_counts() -> None:
         existing_rows=2,
         proposed_new_rows=8,
         shared_author_works=3,
-        possible_version_duplicates=1,
-        non_standard_research_objects=2,
+        standard_draft_eligible_works=6,
+        duplicate_flagged_held_for_review=1,
+        non_standard_held_for_review=2,
     )
     rendered = format_run_summary(summary)
 
@@ -121,9 +122,11 @@ def test_format_run_summary_includes_all_counts() -> None:
     assert "8" in rendered
     assert "Shared-author works:" in rendered
     assert "3" in rendered
-    assert "Possible version duplicates:" in rendered
+    assert "Standard draft-eligible works:" in rendered
+    assert "6" in rendered
+    assert "Duplicate-flagged (held for review):" in rendered
     assert "1" in rendered
-    assert "Non-standard research objects:" in rendered
+    assert "Non-standard (held for review):" in rendered
 
 
 def test_format_run_summary_omits_notion_specific_counts_when_none() -> None:
@@ -131,8 +134,9 @@ def test_format_run_summary_omits_notion_specific_counts_when_none() -> None:
         raw_author_work_matches=5,
         unique_canonical_keys=5,
         shared_author_works=0,
-        possible_version_duplicates=0,
-        non_standard_research_objects=0,
+        standard_draft_eligible_works=5,
+        duplicate_flagged_held_for_review=0,
+        non_standard_held_for_review=0,
     )
     rendered = format_run_summary(summary)
 

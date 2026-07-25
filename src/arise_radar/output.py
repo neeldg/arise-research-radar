@@ -132,25 +132,33 @@ class RunSummary(BaseModel):
     existing_rows: int | None = None
     proposed_new_rows: int | None = None
     shared_author_works: int
-    possible_version_duplicates: int
-    non_standard_research_objects: int
+    # These three partition every canonical row by automatic-drafting
+    # eligibility. `duplicate_flagged_held_for_review` and
+    # `non_standard_held_for_review` are not mutually exclusive — a row can
+    # be both a non-standard work type *and* a probable version duplicate at
+    # once — so they may overlap and need not sum with
+    # `standard_draft_eligible_works` to `unique_canonical_keys`.
+    standard_draft_eligible_works: int
+    duplicate_flagged_held_for_review: int
+    non_standard_held_for_review: int
 
 
 def format_run_summary(summary: RunSummary) -> str:
     lines = [
         "Run summary:",
-        f"  Raw author-work matches:        {summary.raw_author_work_matches}",
-        f"  Unique canonical keys:          {summary.unique_canonical_keys}",
+        f"  Raw author-work matches:              {summary.raw_author_work_matches}",
+        f"  Unique canonical keys:                {summary.unique_canonical_keys}",
     ]
     if summary.existing_rows is not None:
-        lines.append(f"  Existing rows:                   {summary.existing_rows}")
+        lines.append(f"  Existing rows:                         {summary.existing_rows}")
     if summary.proposed_new_rows is not None:
-        lines.append(f"  Proposed new rows:               {summary.proposed_new_rows}")
+        lines.append(f"  Proposed new rows:                     {summary.proposed_new_rows}")
     lines.extend(
         [
-            f"  Shared-author works:             {summary.shared_author_works}",
-            f"  Possible version duplicates:     {summary.possible_version_duplicates}",
-            f"  Non-standard research objects:   {summary.non_standard_research_objects}",
+            f"  Shared-author works:                   {summary.shared_author_works}",
+            f"  Standard draft-eligible works:         {summary.standard_draft_eligible_works}",
+            f"  Duplicate-flagged (held for review):   {summary.duplicate_flagged_held_for_review}",
+            f"  Non-standard (held for review):        {summary.non_standard_held_for_review}",
         ]
     )
     return "\n".join(lines)

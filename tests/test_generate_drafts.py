@@ -452,6 +452,52 @@ def test_canonical_key_not_found_returns_error(
     assert "no Notion row found" in captured.err
 
 
+def test_version_duplicate_row_can_be_force_drafted_via_canonical_key(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mock_notion_client: Callable[..., NotionClient],
+    mock_openalex_client: Callable[..., OpenAlexClient],
+    mock_anthropic_client: Callable[..., AnthropicClient],
+) -> None:
+    """A row that run_roster.py held for review (Draft Status = Needs
+    Attention) because it's a probable version duplicate is not eligible for
+    automatic scheduled drafting -- but a human reviewing it must still be
+    able to draft it manually with --canonical-key + --force."""
+    _set_env(monkeypatch)
+    page = _notion_page("page-1", canonical_key="doi:10.1/target", draft_status="Needs Attention")
+
+    # Without --force: still skipped, even when targeted directly.
+    notion_client = mock_notion_client(_notion_query_handler([page]))
+
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must not call external services without --force")
+
+    exit_code = main(
+        ["--canonical-key", "doi:10.1/target"],
+        notion_client=notion_client,
+        openalex_client=mock_openalex_client(fail),
+        anthropic_client=mock_anthropic_client(fail),
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "skipped" in captured.out
+
+    # With --canonical-key + --force: a human can draft it anyway.
+    notion_client2 = mock_notion_client(_notion_query_handler([page]))
+    openalex_client2 = mock_openalex_client(_openalex_handler)
+    anthropic_client2 = mock_anthropic_client(_anthropic_handler)
+
+    exit_code2 = main(
+        ["--canonical-key", "doi:10.1/target", "--force"],
+        notion_client=notion_client2,
+        openalex_client=openalex_client2,
+        anthropic_client=anthropic_client2,
+    )
+    captured2 = capsys.readouterr()
+    assert exit_code2 == 0
+    assert "preview" in captured2.out
+
+
 # --- error handling continues the run --------------------------------------------
 
 

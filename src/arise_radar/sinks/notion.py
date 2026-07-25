@@ -528,22 +528,42 @@ def _build_create_properties(
     properties[NotionProperties.DETECTED_DATE] = _date_value(detected_date)
     properties[NotionProperties.RESEARCHERS] = _multi_select_value(researcher_names)
 
-    # Fail-open: the record is always imported. Categories with no clear
-    # "finding" to draft about (protocol/registration, dataset/repository,
-    # unknown) default to Needs Attention with a clear reason instead of
-    # sitting silently eligible for scheduled drafting. Create-only, like
+    # Fail-open: the record is always imported. Rows with no clear "finding"
+    # to draft about automatically (a non-standard work type, or a probable
+    # preprint/published-version or repository-version duplicate of another
+    # row) default to Needs Attention with a clear reason instead of sitting
+    # silently eligible for scheduled drafting. Create-only, like
     # Status/Detected Date above — never overwritten on a later resync, so a
     # human's or the drafting pipeline's own progress on this row is
-    # preserved (see _build_update_properties).
-    if not work_type.draft_eligible:
+    # preserved (see _build_update_properties). A human can still draft it
+    # manually via `--canonical-key ... --force`.
+    hold_reasons = _draft_hold_reasons(work_type, version_duplicate_note)
+    if hold_reasons:
         properties[NotionProperties.DRAFT_STATUS] = {
             "select": {"name": NOTION_NEEDS_ATTENTION_STATUS}
         }
         properties[NotionProperties.DRAFT_ERROR] = _rich_text_value(
-            f"Not eligible for scheduled drafting — classified as {work_type.category!r}: "
-            f"{work_type.reason}"
+            "Not eligible for automatic scheduled drafting — requires human review: "
+            + "; ".join(hold_reasons)
         )
     return properties
+
+
+def _draft_hold_reasons(
+    work_type: WorkTypeClassification, version_duplicate_note: str
+) -> list[str]:
+    """Reasons a newly-created row should default to Needs Attention instead
+    of sitting eligible for automatic scheduled drafting. Empty when the row
+    is a standard, draft-eligible, non-duplicate work."""
+    reasons: list[str] = []
+    if not work_type.draft_eligible:
+        reasons.append(f"classified as {work_type.category!r}: {work_type.reason}")
+    if version_duplicate_note:
+        reasons.append(
+            "probable preprint/published-version or repository-version duplicate — "
+            f"{version_duplicate_note}"
+        )
+    return reasons
 
 
 def _build_update_properties(
