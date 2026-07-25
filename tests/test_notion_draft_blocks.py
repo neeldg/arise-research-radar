@@ -174,6 +174,39 @@ def test_unicode_and_emoji_preserved_exactly() -> None:
     assert "".join(_block_text(b) for b in blocks[start:end]) == text
 
 
+# --- round-trip: rich Unicode content -> final Notion payload ----------------------
+
+
+def test_round_trip_unicode_content_produces_clean_notion_payload() -> None:
+    """The final Notion payload (the Python structure passed to
+    append_block_children, before httpx serializes it for the wire) must
+    contain the actual visible characters and no literal "\\u" escape text —
+    proving build_generated_section_blocks never introduces the kind of
+    escape-syntax corruption this module guards against."""
+    content = _draft_content(
+        internal_summary="Key points:\n• Faster\n• Cheaper\n• Safer",
+        key_story_angle="Researchers called it “a turning point” for the field.",
+        why_it_matters="Patients’ outcomes improved — significantly, not marginally.",
+        draft_social_post="Great result 🎉 — read more below 👇",
+        limitations="None evident.",
+    )
+
+    blocks = build_generated_section_blocks(
+        content,
+        source_basis="OpenAlex Abstract",
+        model_name="claude-opus-5",
+        drafted_date=date(2026, 1, 1),
+    )
+
+    # ensure_ascii=False so this dump (as would happen for logs or test output)
+    # shows the real characters rather than escaping them.
+    serialized = json.dumps(blocks, ensure_ascii=False)
+
+    for visible in ("•", "“a turning point”", "’", "—", "🎉", "👇"):
+        assert visible in serialized
+    assert "\\u" not in serialized
+
+
 # --- replace_generated_section: rerun replaces, never duplicates -------------------
 
 

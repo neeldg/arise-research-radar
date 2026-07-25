@@ -678,6 +678,81 @@ def test_page_content_write_failure_is_recorded_and_never_marks_drafted(
     )
 
 
+# --- residual literal escape sequences: never mark Drafted, never touch page body --
+
+
+def test_residual_escape_sequences_block_drafted_status(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mock_notion_client: Callable[..., NotionClient],
+    mock_openalex_client: Callable[..., OpenAlexClient],
+    mock_anthropic_client: Callable[..., AnthropicClient],
+) -> None:
+    """If the model emits literal Unicode-escape-looking text (e.g. a literal
+    "\\u1f447" instead of an emoji), find_residual_escape_sequences_in_content
+    must catch it before any Notion write — the row must not be marked
+    Drafted, no page-body blocks may be written, and Draft Error must clearly
+    explain why."""
+    _set_env(monkeypatch)
+    page = _notion_page("page-1")
+    error_body: dict = {}
+
+    def corrupted_anthropic_handler(request: httpx.Request) -> httpx.Response:
+        payload = {
+            "internal_summary": "Summary.",
+            "key_story_angle": "Angle.",
+            "why_it_matters": "Matters.",
+            "draft_social_post": "Tap here \\u1f447 now.",
+            "limitations": "None.",
+        }
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-opus-5",
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": json.dumps(payload)}],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        )
+
+    def notion_handler(request: httpx.Request) -> httpx.Response:
+        if (
+            request.method == "POST"
+            and request.url.path == f"/v1/data_sources/{DATA_SOURCE_ID}/query"
+        ):
+            return httpx.Response(200, json={"results": [page]})
+        if request.method == "PATCH" and request.url.path == "/v1/pages/page-1":
+            nonlocal error_body
+            error_body = json.loads(request.content)
+            return httpx.Response(200, json={"id": "page-1"})
+        if request.url.path.startswith("/v1/blocks/"):
+            raise AssertionError("must not touch the page body for corrupted draft content")
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    notion_client = mock_notion_client(notion_handler)
+    openalex_client = mock_openalex_client(_openalex_handler)
+    anthropic_client = mock_anthropic_client(corrupted_anthropic_handler)
+
+    exit_code = main(
+        ["--write-notion"],
+        notion_client=notion_client,
+        openalex_client=openalex_client,
+        anthropic_client=anthropic_client,
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "error" in captured.out
+    assert "drafted" not in captured.out
+    assert error_body["properties"]["Draft Status"] == {"select": {"name": "Needs Attention"}}
+    error_text = error_body["properties"]["Draft Error"]["rich_text"][0]["text"]["content"]
+    assert "escape" in error_text.lower()
+    assert "draft_social_post" in error_text
+
+
 # --- Approved rows: page body is never touched -------------------------------------
 
 

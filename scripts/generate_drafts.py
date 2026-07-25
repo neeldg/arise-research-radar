@@ -33,6 +33,7 @@ from arise_radar.drafting import (
     DraftingConfigError,
     DraftInput,
     determine_source_basis,
+    find_residual_escape_sequences_in_content,
     generate_draft_for_paper,
     load_anthropic_config,
     load_style_files,
@@ -265,6 +266,28 @@ def main(
                 )
             except DraftGenerationError as exc:
                 detail = str(exc)
+                results.append(
+                    DraftRunResult(
+                        canonical_key=canonical_key, title=title, action="error", detail=detail
+                    )
+                )
+                if args.write_notion:
+                    _record_error(active_notion, page["id"], detail, run_date)
+                continue
+
+            # Validate before writing: real Anthropic JSON parsing (see
+            # AnthropicClient.generate_draft_content) never leaves escape
+            # syntax behind, so any hit here means the model emitted literal
+            # "\uXXXX"-looking text (or a broken surrogate) as content. Ship
+            # that silently and it renders as garbage in Notion — catch it
+            # here instead and never mark the row Drafted.
+            escape_problems = find_residual_escape_sequences_in_content(content)
+            if escape_problems:
+                detail = (
+                    "Generated content contains literal Unicode escape sequences "
+                    "(a model generation artifact, not real characters) in: "
+                    + ", ".join(sorted(escape_problems))
+                )
                 results.append(
                     DraftRunResult(
                         canonical_key=canonical_key, title=title, action="error", detail=detail

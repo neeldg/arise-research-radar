@@ -13,6 +13,7 @@ sources/openalex.py for those).
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
@@ -21,7 +22,7 @@ from typing import Literal
 import anthropic
 import httpx
 from dotenv import find_dotenv, load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 DEFAULT_MODEL = "claude-opus-5"
 DEFAULT_MAX_TOKENS = 4096
@@ -127,6 +128,51 @@ def determine_source_basis(abstract: str | None) -> Literal["OpenAlex Abstract",
     return "OpenAlex Abstract" if abstract else "Metadata Only"
 
 
+# Matches a literal backslash, "u", and 4-or-more hex digits appearing as real
+# text characters (six literal characters standing in for one em dash, for
+# example) rather than an actual Unicode character. This is a detector only,
+# never a fixer: correctly parsed JSON never leaves escape syntax behind, so
+# any match here means the model itself emitted escape-looking text as content
+# (a generation artifact) or some later step corrupted otherwise-valid
+# Unicode. Requiring 4-or-more hex digits (not exactly 4) also catches
+# malformed escapes like a 5-hex-digit attempt at an astral codepoint written
+# outside a proper UTF-16 surrogate pair.
+_LITERAL_ESCAPE_PATTERN = re.compile(r"\\u[0-9a-fA-F]{4,}")
+
+
+def find_residual_escape_sequences(text: str) -> list[str]:
+    """Detect literal Unicode-escape-looking substrings and orphaned surrogate
+    code points in already-parsed text. Never used to transform or "fix" text
+    — see the module docstring and AnthropicClient.generate_draft_content:
+    text should already be ordinary Unicode by the time it reaches here, so
+    any hit means something upstream (the model, or a future regression) put
+    escape syntax or a broken surrogate directly into the content.
+    """
+    matches = _LITERAL_ESCAPE_PATTERN.findall(text)
+    if any(0xD800 <= ord(ch) <= 0xDFFF for ch in text):
+        matches = [*matches, "<orphaned surrogate code point>"]
+    return matches
+
+
+def find_residual_escape_sequences_in_content(content: DraftContent) -> dict[str, list[str]]:
+    """Run find_residual_escape_sequences over every DraftContent text field.
+    Returns a field-name -> matches mapping; empty when the content is clean.
+    """
+    fields = {
+        "internal_summary": content.internal_summary,
+        "key_story_angle": content.key_story_angle,
+        "why_it_matters": content.why_it_matters,
+        "draft_social_post": content.draft_social_post,
+        "limitations": content.limitations,
+    }
+    problems: dict[str, list[str]] = {}
+    for field_name, value in fields.items():
+        matches = find_residual_escape_sequences(value)
+        if matches:
+            problems[field_name] = matches
+    return problems
+
+
 def build_prompt(draft_input: DraftInput, style_example: str, style_guide: str) -> str:
     researchers = ", ".join(draft_input.researcher_names) or "unknown"
     lines = [
@@ -197,6 +243,17 @@ class AnthropicClient:
         self.close()
 
     def generate_draft_content(self, prompt: str) -> DraftContent:
+        """Returns the SDK's already-parsed structured output directly.
+
+        `messages.parse(..., output_format=DraftContent)` has the SDK itself
+        parse the model's JSON text response exactly once, via pydantic's real
+        JSON parser (`TypeAdapter(DraftContent).validate_json(...)`), and
+        `response.parsed_output` is already a fully-built `DraftContent` with
+        ordinary Python Unicode string fields. This method must never
+        re-parse, regex-extract, or otherwise reprocess that text — doing so
+        would risk exactly the kind of double-decoding corruption (literal
+        "\\uXXXX" text, mangled surrogate pairs) this module exists to avoid.
+        """
         try:
             response = self._client.messages.parse(
                 model=self.model,
@@ -206,6 +263,14 @@ class AnthropicClient:
             )
         except (anthropic.APIStatusError, anthropic.APIConnectionError) as exc:
             raise DraftGenerationError(f"Anthropic API request failed: {exc}") from exc
+        except ValidationError as exc:
+            # The model's text content didn't parse into DraftContent's shape
+            # (e.g. malformed or double-encoded JSON) — surfaced as a clean,
+            # per-item DraftGenerationError rather than an uncaught exception
+            # that would crash the whole run.
+            raise DraftGenerationError(
+                f"Anthropic response could not be parsed as structured output: {exc}"
+            ) from exc
 
         if response.stop_reason == "refusal":
             raise DraftGenerationError("Anthropic declined to generate a draft (safety refusal)")
