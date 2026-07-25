@@ -1,7 +1,30 @@
 from datetime import date
 
 from arise_radar.models import NormalizedPublication, Researcher
-from arise_radar.output import format_publications, format_skip_warning
+from arise_radar.output import (
+    format_exclusion_summary,
+    format_publications,
+    format_relevance_summary,
+    format_skip_warning,
+)
+from arise_radar.relevance import RelevanceDecision
+
+KEEP = RelevanceDecision(status="keep", reason="matched a healthcare/clinical-AI signal")
+UNCERTAIN = RelevanceDecision(status="uncertain", reason="no clear signal found")
+
+
+def _pub(**overrides: object) -> NormalizedPublication:
+    defaults: dict[str, object] = {
+        "researcher_id": "jane_doe",
+        "researcher_name": "Jane Doe",
+        "title": "A Great Paper",
+        "publication_date": date(2026, 1, 1),
+        "doi": "10.1000/abc",
+        "openalex_id": "W1",
+        "canonical_key": "doi:10.1000/abc",
+    }
+    defaults.update(overrides)
+    return NormalizedPublication(**defaults)
 
 
 def test_format_skip_warning_includes_name_id_and_reason() -> None:
@@ -17,19 +40,55 @@ def test_format_publications_empty_list() -> None:
 
 
 def test_format_publications_includes_required_fields() -> None:
-    pub = NormalizedPublication(
-        researcher_id="jane_doe",
-        researcher_name="Jane Doe",
-        title="A Great Paper",
-        publication_date=date(2026, 1, 1),
-        doi="10.1000/abc",
-        openalex_id="W1",
-        canonical_key="doi:10.1000/abc",
-    )
-    rendered = format_publications([pub])
+    rendered = format_publications([(_pub(), KEEP)])
     assert "Jane Doe" in rendered
     assert "A Great Paper" in rendered
     assert "2026-01-01" in rendered
     assert "10.1000/abc" in rendered
     assert "W1" in rendered
     assert "doi:10.1000/abc" in rendered
+    assert "UNCERTAIN" not in rendered
+
+
+def test_format_publications_marks_uncertain_entries() -> None:
+    rendered = format_publications([(_pub(), UNCERTAIN)])
+    assert "[UNCERTAIN" in rendered
+    assert "no clear signal found" in rendered
+
+
+def test_format_relevance_summary() -> None:
+    summary = format_relevance_summary(3, 1, 2)
+    assert "Kept: 3" in summary
+    assert "Uncertain but kept: 1" in summary
+    assert "Clearly unrelated and excluded: 2" in summary
+
+
+def test_format_exclusion_summary_empty() -> None:
+    assert format_exclusion_summary([], show_details=False) == ""
+    assert format_exclusion_summary([], show_details=True) == ""
+
+
+def test_format_exclusion_summary_short_form_hides_titles() -> None:
+    decision = RelevanceDecision(
+        status="exclude", reason="food science", matched_terms=["food science"]
+    )
+    summary = format_exclusion_summary(
+        [(_pub(title="Pumpkin seed flour study"), decision)], show_details=False
+    )
+    assert "Excluded (1)" in summary
+    assert "--show-excluded" in summary
+    assert "Pumpkin seed flour study" not in summary
+
+
+def test_format_exclusion_summary_full_details() -> None:
+    decision = RelevanceDecision(
+        status="exclude", reason="food science", matched_terms=["food science", "pumpkin"]
+    )
+    summary = format_exclusion_summary(
+        [(_pub(title="Pumpkin seed flour study"), decision)], show_details=True
+    )
+    assert "Pumpkin seed flour study" in summary
+    assert "food science" in summary
+    assert "pumpkin" in summary
+    assert "W1" in summary
+    assert "2026-01-01" in summary

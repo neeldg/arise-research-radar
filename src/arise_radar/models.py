@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -16,6 +17,8 @@ class Researcher(BaseModel):
     orcid: str | None = None
     aliases: list[str] = Field(default_factory=list)
     active: bool = True
+    identity_status: Literal["verified", "ambiguous"] = "verified"
+    relevance_filter: Literal["none", "healthcare_arise"] = "none"
 
 
 class SeedResearcher(BaseModel):
@@ -40,6 +43,10 @@ class NormalizedPublication(BaseModel):
     doi: str | None
     openalex_id: str
     canonical_key: str
+    topics: list[str] = Field(default_factory=list)
+    concepts: list[str] = Field(default_factory=list)
+    venue: str | None = None
+    work_type: str | None = None
 
 
 def compute_canonical_key(doi: str | None, openalex_work_id: str) -> str:

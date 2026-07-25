@@ -318,30 +318,60 @@ Do not evaluate only on items that ARISE ultimately posts.
 7. Shadow-mode evaluation
 8. Broader field discovery, only if justified
 
+## Completed milestones
+
+* **Roster-publication dry run.** YAML researcher roster, normalized
+  publication record, an injectable OpenAlex source adapter with cursor
+  pagination and bounded retries, a local CLI that fetches recent works by
+  OpenAlex author ID, readable terminal output, mocked tests.
+* **Publication-level relevance filter.** For roster entries with an
+  ambiguous/merged OpenAlex identity (`identity_status: ambiguous`,
+  `relevance_filter: healthcare_arise`), a deterministic, fail-open
+  keyword/topic filter over OpenAlex metadata (title, topics, concepts,
+  venue, work type) that keeps healthcare/clinical-AI-relevant papers,
+  excludes clearly unrelated-domain papers (with a visible, auditable
+  exclusion summary — never silently discarded), and marks ambiguous ones
+  `uncertain` but still keeps them. No LLM calls.
+
 ## Current milestone
 
-The current milestone is intentionally narrow.
+Local test Notion sink for the roster-publication pipeline.
 
 Build only:
 
-* a YAML researcher roster,
-* a normalized publication record,
-* an OpenAlex source adapter,
-* a local command that fetches recent works by OpenAlex author ID,
-* readable terminal output,
-* mocked tests,
-* and basic project documentation.
+* Notion configuration (`NOTION_TOKEN`, `NOTION_DATA_SOURCE_ID`) loaded from
+  environment variables, `.env` supported via `python-dotenv`; the token is
+  never printed or logged;
+* a typed Notion sink (`src/arise_radar/sinks/notion.py`) using a small
+  injectable HTTP client, mirroring the OpenAlex adapter's pattern, so tests
+  mock it via `httpx.MockTransport` rather than depending on the official
+  `notion-client` SDK's support for the newer "data source" API surface;
+* canonical-key lookup and create-or-update (upsert) behavior: no match
+  creates a page with `Status = New`; exactly one match updates metadata,
+  preserves the existing editorial `Status`, and merges the current
+  researcher into `Researchers`; more than one match is left untouched and
+  logged as a visible duplicate-key error for human repair;
+* publications the relevance filter marked `exclude` are never written to
+  Notion;
+* a Notion failure on one publication is reported and does not stop the
+  rest of the run;
+* explicit CLI opt-in flags (`--write-notion`, `--notion-dry-run`, mutually
+  exclusive) — the default remains fully read-only, no Notion request of
+  any kind;
+* mocked tests (no live Notion or OpenAlex calls);
+* readable run summaries.
 
 Do not currently build:
 
-* Notion integration,
-* Anthropic API calls,
-* social-post drafting,
+* Anthropic or other LLM calls,
+* internal summaries or social-post drafting,
 * citation monitoring,
 * media monitoring,
-* broad deduplication,
 * GitHub Actions,
-* or field discovery.
+* broad fuzzy deduplication,
+* automatic publishing,
+* or writes to any production Notion database (this milestone targets a
+  local test data source only).
 
 ## Current success criterion
 
@@ -361,6 +391,14 @@ The output should include:
 * DOI when available,
 * OpenAlex work ID,
 * and canonical key.
+
+With a configured test Notion data source, these commands should also work
+without ever writing until `--write-notion` is passed:
+
+```bash
+python scripts/run_roster.py --roster config/roster.yaml --days-back 730 --notion-dry-run
+python scripts/run_roster.py --roster config/roster.yaml --days-back 730 --write-notion
+```
 
 Tests must not make live network requests.
 

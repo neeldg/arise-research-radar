@@ -8,5 +8,11 @@ venv/
 dist/
 build/
 
-# Local verified roster — real OpenAlex IDs go here once confirmed, never committed.
-config/roster.yaml
+# Local/private roster overrides only. The tracked roster is config/roster.yaml —
+# ARISE researcher names and OpenAlex IDs are public configuration and are committed.
+config/roster.local.yaml
+
+# Real Notion credentials. Copy .env.example to .env and fill in real values locally.
+.env
+.env.*
+!.env.example

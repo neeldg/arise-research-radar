@@ -124,7 +124,41 @@ def _normalize_work(researcher: Researcher, work: dict) -> NormalizedPublication
         doi=doi,
         openalex_id=openalex_work_id,
         canonical_key=compute_canonical_key(doi, openalex_work_id),
+        topics=_extract_topics(work),
+        concepts=_extract_concepts(work),
+        venue=_extract_venue(work),
+        work_type=work.get("type"),
     )
+
+
+def _extract_topics(work: dict) -> list[str]:
+    """Collect topic/subfield/field/domain display names from primary_topic and topics."""
+    names: set[str] = set()
+    topic_entries = [work.get("primary_topic") or {}, *(work.get("topics") or [])]
+    for entry in topic_entries:
+        if entry.get("display_name"):
+            names.add(entry["display_name"])
+        for level in ("subfield", "field", "domain"):
+            nested = entry.get(level) or {}
+            if nested.get("display_name"):
+                names.add(nested["display_name"])
+    return sorted(names)
+
+
+def _extract_concepts(work: dict) -> list[str]:
+    return sorted(
+        {
+            concept["display_name"]
+            for concept in work.get("concepts") or []
+            if concept.get("display_name")
+        }
+    )
+
+
+def _extract_venue(work: dict) -> str | None:
+    primary_location = work.get("primary_location") or {}
+    source = primary_location.get("source") or {}
+    return source.get("display_name")
 
 
 def _clean_doi(raw_doi: str | None) -> str | None:

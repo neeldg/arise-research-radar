@@ -1,0 +1,41 @@
+researchers:
+  - id: ethan_goh
+    name: Ethan Goh
+    openalex_id: A5103153068
+    orcid: null
+    aliases:
+      - Ethan Goh
+    active: true
+    identity_status: verified
+    relevance_filter: none
+
+  # OpenAlex profile A5046725885 is a merged/ambiguous author node: querying
+  # Jonathan's verified ORCID (0000-0002-4387-8740) resolves back to this same
+  # ID, and its affiliations/works span dozens of unrelated institutions and
+  # domains (food science, econometrics, image/signal processing, etc.)
+  # alongside genuine Stanford biomedical-informatics work. Rather than
+  # deactivating him, publication-level relevance filtering
+  # (relevance_filter: healthcare_arise) is applied so the pipeline stays
+  # fail-open: healthcare/clinical-AI-relevant papers are kept, clearly
+  # unrelated-domain papers are excluded and logged (never silently dropped),
+  # and ambiguous ones are kept but flagged uncertain for human review.
+  - id: jonathan_h_chen
+    name: Jonathan H Chen
+    openalex_id: A5046725885
+    orcid: "0000-0002-4387-8740"
+    aliases:
+      - Jonathan H Chen
+      - Jonathan Chen
+    active: true
+    identity_status: ambiguous
+    relevance_filter: healthcare_arise
+
+  - id: adam_rodman
+    name: Adam Rodman
+    openalex_id: A5045324950
+    orcid: null
+    aliases:
+      - Adam Rodman
+    active: true
+    identity_status: verified
+    relevance_filter: none

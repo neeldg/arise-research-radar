@@ -1,8 +1,10 @@
 # Example production roster — copy relevant entries into config/roster.yaml
 # once an OpenAlex author ID has been verified for a researcher.
 #
-# config/roster.yaml is gitignored: it holds real, verified researcher records
-# and is not committed to the repository.
+# config/roster.yaml is version-controlled: ARISE researcher names and OpenAlex
+# IDs are public configuration, and roster changes should be auditable via git
+# history. For local/private overrides, use the gitignored config/roster.local.yaml
+# instead.
 researchers:
   - id: ethan_goh
     name: Ethan Goh
