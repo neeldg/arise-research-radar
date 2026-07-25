@@ -17,19 +17,23 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from arise_radar.models import Researcher
+from arise_radar.dedupe import DedupedPublication, group_by_canonical_key
+from arise_radar.models import NormalizedPublication, Researcher
 from arise_radar.output import (
+    RunSummary,
     format_exclusion_summary,
     format_notion_summary,
     format_publications,
     format_relevance_summary,
+    format_run_summary,
     format_skip_warning,
 )
-from arise_radar.relevance import apply_relevance_filter
+from arise_radar.relevance import RelevanceDecision, apply_relevance_filter
 from arise_radar.roster import RosterError, load_roster
 from arise_radar.sinks.notion import (
     NotionClient,
     NotionConfigError,
+    NotionUpsertResult,
     load_notion_config,
     upsert_publication,
 )
@@ -38,6 +42,12 @@ from arise_radar.sources.openalex import (
     OpenAlexError,
     fetch_researcher_publications,
 )
+from arise_radar.version_family import (
+    VersionFamilyMatch,
+    find_possible_version_duplicates,
+    format_version_duplicate_note,
+)
+from arise_radar.work_types import classify_work_type
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -125,6 +135,10 @@ def main(
     active_client = client or OpenAlexClient()
     run_date = date.today()
 
+    # Accumulated across every researcher before any Notion call, so
+    # same-run dedup (below) sees the whole batch — see arise_radar.dedupe.
+    all_visible: list[tuple[NormalizedPublication, RelevanceDecision]] = []
+
     try:
         for researcher in queryable:
             try:
@@ -148,25 +162,54 @@ def main(
             if exclusion_text:
                 print()
                 print(exclusion_text)
+            print()
 
-            if notion_enabled:
-                assert active_notion_client is not None
-                assert notion_data_source_id is not None
-                notion_results = [
+            all_visible.extend(visible)
+
+        # --- Dedupe stage: same-run canonical-key groups, each with every
+        # matching researcher merged. Done *before* any Notion call so a
+        # paper shared by multiple roster researchers becomes one row/one
+        # "Would create" line even in --notion-dry-run mode, which never
+        # persists between calls (see arise_radar.dedupe). ---
+        grouped = group_by_canonical_key(all_visible)
+
+        # --- Classify stage: version-family flags are advisory only and
+        # never merge canonical keys (see arise_radar.version_family). ---
+        candidates = [group.publication for group in grouped]
+        version_matches = {
+            group.publication.canonical_key: find_possible_version_duplicates(
+                group.publication, candidates
+            )
+            for group in grouped
+        }
+
+        notion_results: list[NotionUpsertResult] = []
+        if notion_enabled:
+            assert active_notion_client is not None
+            assert notion_data_source_id is not None
+            for group in grouped:
+                note = format_version_duplicate_note(
+                    version_matches[group.publication.canonical_key]
+                )
+                notion_results.append(
                     upsert_publication(
                         active_notion_client,
                         notion_data_source_id,
-                        pub,
-                        decision,
+                        group.publication,
+                        group.decision,
                         detected_date=run_date,
                         dry_run=args.notion_dry_run,
+                        researcher_names=group.researcher_names,
+                        version_duplicate_note=note,
                     )
-                    for pub, decision in visible
-                ]
-                print()
-                print(format_notion_summary(notion_results))
-
+                )
+            print(format_notion_summary(notion_results))
             print()
+
+        summary = _compute_run_summary(
+            all_visible, grouped, version_matches, notion_results, notion_enabled=notion_enabled
+        )
+        print(format_run_summary(summary))
     finally:
         if owns_client:
             active_client.close()
@@ -174,6 +217,43 @@ def main(
             active_notion_client.close()
 
     return 0
+
+
+_EXISTING_ACTIONS = {"updated", "dry_run_update"}
+_NEW_ACTIONS = {"created", "dry_run_create"}
+
+
+def _compute_run_summary(
+    all_visible: list[tuple[NormalizedPublication, RelevanceDecision]],
+    grouped: list[DedupedPublication],
+    version_matches: dict[str, list[VersionFamilyMatch]],
+    notion_results: list[NotionUpsertResult],
+    *,
+    notion_enabled: bool,
+) -> RunSummary:
+    shared_author_works = sum(1 for group in grouped if len(group.researcher_names) > 1)
+    possible_version_duplicates = sum(
+        1 for group in grouped if version_matches.get(group.publication.canonical_key)
+    )
+    non_standard_research_objects = sum(
+        1 for group in grouped if not classify_work_type(group.publication).draft_eligible
+    )
+
+    existing_rows: int | None = None
+    proposed_new_rows: int | None = None
+    if notion_enabled:
+        existing_rows = sum(1 for result in notion_results if result.action in _EXISTING_ACTIONS)
+        proposed_new_rows = sum(1 for result in notion_results if result.action in _NEW_ACTIONS)
+
+    return RunSummary(
+        raw_author_work_matches=len(all_visible),
+        unique_canonical_keys=len(grouped),
+        existing_rows=existing_rows,
+        proposed_new_rows=proposed_new_rows,
+        shared_author_works=shared_author_works,
+        possible_version_duplicates=possible_version_duplicates,
+        non_standard_research_objects=non_standard_research_objects,
+    )
 
 
 if __name__ == "__main__":

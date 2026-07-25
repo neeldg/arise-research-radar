@@ -135,6 +135,7 @@ def _normalize_work(researcher: Researcher, work: dict) -> NormalizedPublication
         concepts=_extract_concepts(work),
         venue=_extract_venue(work),
         work_type=work.get("type"),
+        authors=_extract_authors(work),
     )
 
 
@@ -160,6 +161,20 @@ def _extract_concepts(work: dict) -> list[str]:
             if concept.get("display_name")
         }
     )
+
+
+def _extract_authors(work: dict) -> list[str]:
+    """Full paper author list (not just the roster researcher who matched
+    this work) — used for cross-DOI version-family detection, where "the same
+    ARISE researcher" alone isn't a strong enough overlap signal. OpenAlex's
+    works-list response already includes `authorships` by default, so this
+    costs no extra API call."""
+    names: list[str] = []
+    for authorship in work.get("authorships") or []:
+        name = (authorship.get("author") or {}).get("display_name")
+        if name and name not in names:
+            names.append(name)
+    return names
 
 
 def _extract_venue(work: dict) -> str | None:

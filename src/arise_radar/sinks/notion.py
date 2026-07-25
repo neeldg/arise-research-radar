@@ -22,6 +22,7 @@ from pydantic import BaseModel, SecretStr
 from arise_radar.drafting import DraftContent
 from arise_radar.models import NormalizedPublication
 from arise_radar.relevance import RelevanceDecision
+from arise_radar.work_types import WorkTypeClassification, classify_work_type
 
 NOTION_APPROVED_DRAFT_STATUS = "Approved"
 NOTION_DRAFTED_STATUS = "Drafted"
@@ -378,8 +379,21 @@ def upsert_publication(
     *,
     detected_date: date,
     dry_run: bool = False,
+    researcher_names: Iterable[str] | None = None,
+    version_duplicate_note: str = "",
 ) -> NotionUpsertResult:
     """Create or update the Notion row for one publication.
+
+    `researcher_names`, when given, is the full set of roster researchers who
+    matched this canonical key *in this run* (see arise_radar.dedupe) — used
+    instead of just `publication.researcher_name` so shared papers become one
+    row with every matching researcher even before anything has been written
+    to Notion (dry-run mode never persists between calls, so relying solely
+    on querying Notion for this would under-merge). Defaults to
+    `{publication.researcher_name}` when omitted, matching prior behavior.
+
+    `version_duplicate_note`, when given, is appended to System Notes (see
+    arise_radar.version_family) — advisory only, never merges canonical keys.
 
     Never called for `exclude` decisions — the caller is expected to filter
     those out first, and this raises if it happens anyway. Never raises for
@@ -388,6 +402,8 @@ def upsert_publication(
     """
     if decision.status == "exclude":
         raise ValueError("upsert_publication must not be called for excluded publications")
+
+    names = set(researcher_names) if researcher_names is not None else {publication.researcher_name}
 
     try:
         matches = client.query_data_source_by_canonical_key(
@@ -410,9 +426,20 @@ def upsert_publication(
         )
 
     if not matches:
-        return _create(client, data_source_id, publication, decision, detected_date, dry_run)
+        return _create(
+            client,
+            data_source_id,
+            publication,
+            decision,
+            detected_date,
+            dry_run,
+            names,
+            version_duplicate_note,
+        )
 
-    return _update(client, matches[0], publication, decision, dry_run)
+    return _update(
+        client, matches[0], publication, decision, dry_run, names, version_duplicate_note
+    )
 
 
 def _create(
@@ -422,15 +449,20 @@ def _create(
     decision: RelevanceDecision,
     detected_date: date,
     dry_run: bool,
+    researcher_names: set[str],
+    version_duplicate_note: str,
 ) -> NotionUpsertResult:
     if dry_run:
+        who = ", ".join(repr(name) for name in sorted(researcher_names))
         return NotionUpsertResult(
             canonical_key=publication.canonical_key,
             action="dry_run_create",
-            detail=f"would create page for {publication.researcher_name!r}: {publication.title!r}",
+            detail=f"would create page for {who}: {publication.title!r}",
         )
 
-    properties = _build_create_properties(publication, decision, detected_date)
+    properties = _build_create_properties(
+        publication, decision, detected_date, researcher_names, version_duplicate_note
+    )
     try:
         page = client.create_page(data_source_id, properties)
     except NotionError as exc:
@@ -450,17 +482,16 @@ def _update(
     publication: NormalizedPublication,
     decision: RelevanceDecision,
     dry_run: bool,
+    researcher_names: set[str],
+    version_duplicate_note: str,
 ) -> NotionUpsertResult:
     page_id = existing_page.get("id")
     existing_researchers = _read_multi_select(existing_page, NotionProperties.RESEARCHERS)
-    merged_researchers = existing_researchers | {publication.researcher_name}
+    merged_researchers = existing_researchers | researcher_names
 
     if dry_run:
-        adds = (
-            "no new researcher"
-            if publication.researcher_name in existing_researchers
-            else f"adds {publication.researcher_name!r}"
-        )
+        new_names = researcher_names - existing_researchers
+        adds = f"adds {sorted(new_names)}" if new_names else "no new researcher"
         return NotionUpsertResult(
             canonical_key=publication.canonical_key,
             action="dry_run_update",
@@ -468,7 +499,9 @@ def _update(
             detail=f"would update page ({adds}; researchers -> {sorted(merged_researchers)})",
         )
 
-    properties = _build_update_properties(publication, decision, merged_researchers)
+    properties = _build_update_properties(
+        publication, decision, merged_researchers, version_duplicate_note
+    )
     try:
         client.update_page(page_id, properties)
     except NotionError as exc:
@@ -483,27 +516,59 @@ def _update(
 
 
 def _build_create_properties(
-    publication: NormalizedPublication, decision: RelevanceDecision, detected_date: date
+    publication: NormalizedPublication,
+    decision: RelevanceDecision,
+    detected_date: date,
+    researcher_names: set[str],
+    version_duplicate_note: str = "",
 ) -> dict:
-    properties = _shared_properties(publication, decision)
+    work_type = classify_work_type(publication)
+    properties = _shared_properties(publication, decision, work_type, version_duplicate_note)
     properties[NotionProperties.STATUS] = {"select": {"name": NOTION_NEW_STATUS}}
     properties[NotionProperties.DETECTED_DATE] = _date_value(detected_date)
-    properties[NotionProperties.RESEARCHERS] = _multi_select_value({publication.researcher_name})
+    properties[NotionProperties.RESEARCHERS] = _multi_select_value(researcher_names)
+
+    # Fail-open: the record is always imported. Categories with no clear
+    # "finding" to draft about (protocol/registration, dataset/repository,
+    # unknown) default to Needs Attention with a clear reason instead of
+    # sitting silently eligible for scheduled drafting. Create-only, like
+    # Status/Detected Date above — never overwritten on a later resync, so a
+    # human's or the drafting pipeline's own progress on this row is
+    # preserved (see _build_update_properties).
+    if not work_type.draft_eligible:
+        properties[NotionProperties.DRAFT_STATUS] = {
+            "select": {"name": NOTION_NEEDS_ATTENTION_STATUS}
+        }
+        properties[NotionProperties.DRAFT_ERROR] = _rich_text_value(
+            f"Not eligible for scheduled drafting — classified as {work_type.category!r}: "
+            f"{work_type.reason}"
+        )
     return properties
 
 
 def _build_update_properties(
-    publication: NormalizedPublication, decision: RelevanceDecision, researchers: set[str]
+    publication: NormalizedPublication,
+    decision: RelevanceDecision,
+    researchers: set[str],
+    version_duplicate_note: str = "",
 ) -> dict:
-    # Status and Detected Date are intentionally omitted here: editorial status and
-    # the original detection date are preserved rather than overwritten on every sync.
-    # Editorial Notes is never included anywhere in this module — it is human-owned.
-    properties = _shared_properties(publication, decision)
+    # Status, Detected Date, Draft Status, and Draft Error are intentionally
+    # omitted here: editorial status, the original detection date, and
+    # drafting-pipeline progress are preserved rather than overwritten on
+    # every sync. Editorial Notes is never included anywhere in this module
+    # — it is human-owned.
+    work_type = classify_work_type(publication)
+    properties = _shared_properties(publication, decision, work_type, version_duplicate_note)
     properties[NotionProperties.RESEARCHERS] = _multi_select_value(researchers)
     return properties
 
 
-def _shared_properties(publication: NormalizedPublication, decision: RelevanceDecision) -> dict:
+def _shared_properties(
+    publication: NormalizedPublication,
+    decision: RelevanceDecision,
+    work_type: WorkTypeClassification,
+    version_duplicate_note: str = "",
+) -> dict:
     properties: dict[str, object] = {
         NotionProperties.NAME: _title_value(publication.title),
         NotionProperties.CANONICAL_KEY: _rich_text_value(publication.canonical_key),
@@ -511,7 +576,9 @@ def _shared_properties(publication: NormalizedPublication, decision: RelevanceDe
         NotionProperties.RELEVANCE_STATUS: {
             "select": {"name": RELEVANCE_STATUS_LABELS.get(decision.status, decision.status)}
         },
-        NotionProperties.SYSTEM_NOTES: _rich_text_value(_notes_text(decision)),
+        NotionProperties.SYSTEM_NOTES: _rich_text_value(
+            _notes_text(decision, work_type, version_duplicate_note)
+        ),
     }
     if publication.publication_date:
         properties[NotionProperties.PUBLISHED_DATE] = _date_value(publication.publication_date)
@@ -541,10 +608,20 @@ def _multi_select_value(names: Iterable[str]) -> dict:
     return {"multi_select": [{"name": name} for name in sorted(names)]}
 
 
-def _notes_text(decision: RelevanceDecision) -> str:
+def _notes_text(
+    decision: RelevanceDecision,
+    work_type: WorkTypeClassification,
+    version_duplicate_note: str = "",
+) -> str:
     if decision.matched_terms:
-        return f"{decision.reason} (matched: {', '.join(decision.matched_terms)})"
-    return decision.reason
+        relevance_text = f"{decision.reason} (matched: {', '.join(decision.matched_terms)})"
+    else:
+        relevance_text = decision.reason
+
+    parts = [relevance_text, f"Work type: {work_type.category} ({work_type.reason})"]
+    if version_duplicate_note:
+        parts.append(version_duplicate_note)
+    return "\n\n".join(parts)
 
 
 def _publication_url(publication: NormalizedPublication) -> str | None:

@@ -56,6 +56,70 @@ def test_normalizes_single_page_of_works(
     assert second.publication_date is None
 
 
+def test_extracts_full_author_list_from_authorships(
+    mock_openalex_client: Callable[..., OpenAlexClient],
+) -> None:
+    researcher = Researcher(id="jane_doe", name="Jane Doe", openalex_id="A1")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "id": "https://openalex.org/W1",
+                        "display_name": "Paper One",
+                        "publication_date": "2026-02-01",
+                        "doi": None,
+                        "authorships": [
+                            {"author": {"display_name": "Jane Doe"}},
+                            {"author": {"display_name": "John Smith"}},
+                            {"author": {"display_name": "Jane Doe"}},  # duplicate, deduped
+                            {"author": {}},  # no display_name, skipped
+                        ],
+                    }
+                ],
+                "meta": {"next_cursor": None},
+            },
+        )
+
+    client = mock_openalex_client(handler)
+    publications = fetch_researcher_publications(
+        client, researcher, days_back=90, today=date(2026, 3, 1)
+    )
+
+    assert publications[0].authors == ["Jane Doe", "John Smith"]
+
+
+def test_missing_authorships_gives_empty_author_list(
+    mock_openalex_client: Callable[..., OpenAlexClient],
+) -> None:
+    researcher = Researcher(id="jane_doe", name="Jane Doe", openalex_id="A1")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "id": "https://openalex.org/W1",
+                        "display_name": "Paper One",
+                        "publication_date": "2026-02-01",
+                        "doi": None,
+                    }
+                ],
+                "meta": {"next_cursor": None},
+            },
+        )
+
+    client = mock_openalex_client(handler)
+    publications = fetch_researcher_publications(
+        client, researcher, days_back=90, today=date(2026, 3, 1)
+    )
+
+    assert publications[0].authors == []
+
+
 def test_paginates_with_cursor(mock_openalex_client: Callable[..., OpenAlexClient]) -> None:
     researcher = Researcher(id="jane_doe", name="Jane Doe", openalex_id="A1")
     seen_cursors: list[str | None] = []

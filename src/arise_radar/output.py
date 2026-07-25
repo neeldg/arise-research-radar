@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from pydantic import BaseModel
+
 from arise_radar.models import NormalizedPublication, Researcher
 from arise_radar.relevance import RelevanceDecision
 from arise_radar.sinks.notion import NotionUpsertResult
@@ -113,4 +115,42 @@ def format_notion_summary(results: Sequence[NotionUpsertResult]) -> str:
         if result.action in _NOTION_DETAIL_ACTIONS:
             lines.append(f"    [{result.action}] {result.canonical_key}: {result.detail}")
 
+    return "\n".join(lines)
+
+
+class RunSummary(BaseModel):
+    """One final, run-wide aggregate — printed once, after every researcher
+    has been processed and the run has been deduplicated. Distinct from the
+    per-researcher "Would create"/"Would update" lines above: those exist per
+    canonical key *after* same-run dedup (see arise_radar.dedupe), so this
+    summary never makes repeated per-author lines for a shared paper look
+    like duplicate live writes.
+    """
+
+    raw_author_work_matches: int
+    unique_canonical_keys: int
+    existing_rows: int | None = None
+    proposed_new_rows: int | None = None
+    shared_author_works: int
+    possible_version_duplicates: int
+    non_standard_research_objects: int
+
+
+def format_run_summary(summary: RunSummary) -> str:
+    lines = [
+        "Run summary:",
+        f"  Raw author-work matches:        {summary.raw_author_work_matches}",
+        f"  Unique canonical keys:          {summary.unique_canonical_keys}",
+    ]
+    if summary.existing_rows is not None:
+        lines.append(f"  Existing rows:                   {summary.existing_rows}")
+    if summary.proposed_new_rows is not None:
+        lines.append(f"  Proposed new rows:               {summary.proposed_new_rows}")
+    lines.extend(
+        [
+            f"  Shared-author works:             {summary.shared_author_works}",
+            f"  Possible version duplicates:     {summary.possible_version_duplicates}",
+            f"  Non-standard research objects:   {summary.non_standard_research_objects}",
+        ]
+    )
     return "\n".join(lines)

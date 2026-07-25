@@ -25,6 +25,7 @@ def _pub(**overrides: object) -> NormalizedPublication:
         "doi": "10.1000/abc",
         "openalex_id": "W1",
         "canonical_key": "doi:10.1000/abc",
+        "work_type": "article",
     }
     defaults.update(overrides)
     return NormalizedPublication(**defaults)
@@ -316,3 +317,250 @@ def test_dry_run_update_makes_no_write_request(
 
     assert result.action == "dry_run_update"
     assert "Adam Rodman" in result.detail
+
+
+# --- work-type classification: create-only Draft Status/Draft Error ----------------
+
+
+def test_draft_eligible_work_type_never_touches_draft_status(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    created_body: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/data_sources/ds_123/query":
+            return httpx.Response(200, json={"results": []})
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            nonlocal created_body
+            created_body = json.loads(request.content)
+            return httpx.Response(200, json={"id": "page-new-1"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    client = mock_notion_client(handler)
+    pub = _pub(work_type="article")
+
+    upsert_publication(client, "ds_123", pub, KEEP, detected_date=date(2026, 1, 2))
+
+    assert "Draft Status" not in created_body["properties"]
+    assert "Draft Error" not in created_body["properties"]
+    notes = created_body["properties"]["System Notes"]["rich_text"][0]["text"]["content"]
+    assert "Work type: article" in notes
+
+
+def test_zenodo_repository_defaults_to_needs_attention_on_create(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    created_body: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/data_sources/ds_123/query":
+            return httpx.Response(200, json={"results": []})
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            nonlocal created_body
+            created_body = json.loads(request.content)
+            return httpx.Response(200, json={"id": "page-new-1"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    client = mock_notion_client(handler)
+    pub = _pub(
+        title="Stanford Biodesign Digital Health Group",
+        doi="10.5281/zenodo.21358702",
+        canonical_key="doi:10.5281/zenodo.21358702",
+        work_type=None,
+    )
+
+    result = upsert_publication(client, "ds_123", pub, KEEP, detected_date=date(2026, 1, 2))
+
+    assert result.action == "created"
+    props = created_body["properties"]
+    assert props["Draft Status"] == {"select": {"name": "Needs Attention"}}
+    error_text = props["Draft Error"]["rich_text"][0]["text"]["content"]
+    assert "dataset/repository" in error_text
+    notes = props["System Notes"]["rich_text"][0]["text"]["content"]
+    assert "Work type: dataset/repository" in notes
+
+
+def test_osf_registration_defaults_to_needs_attention_on_create(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    created_body: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/data_sources/ds_123/query":
+            return httpx.Response(200, json={"results": []})
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            nonlocal created_body
+            created_body = json.loads(request.content)
+            return httpx.Response(200, json={"id": "page-new-1"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    client = mock_notion_client(handler)
+    pub = _pub(
+        title="GP AI Skin Cancer Portal Study",
+        doi="10.17605/osf.io/evxkq",
+        canonical_key="doi:10.17605/osf.io/evxkq",
+        work_type=None,
+    )
+
+    result = upsert_publication(client, "ds_123", pub, KEEP, detected_date=date(2026, 1, 2))
+
+    assert result.action == "created"
+    props = created_body["properties"]
+    assert props["Draft Status"] == {"select": {"name": "Needs Attention"}}
+    error_text = props["Draft Error"]["rich_text"][0]["text"]["content"]
+    assert "protocol/registration" in error_text
+
+
+def test_non_eligible_work_type_never_touches_draft_status_on_update(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    """A resync of a non-eligible row must not clobber Draft Status/Draft
+    Error a human or the drafting pipeline may have since set (e.g. a human
+    manually Approved it, or --force drafted it anyway)."""
+    updated_body: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/data_sources/ds_123/query":
+            return httpx.Response(
+                200, json={"results": [_existing_page("page-1", "New", ["Ethan Goh"])]}
+            )
+        if request.method == "PATCH" and request.url.path == "/v1/pages/page-1":
+            nonlocal updated_body
+            updated_body = json.loads(request.content)
+            return httpx.Response(200, json={"id": "page-1"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    client = mock_notion_client(handler)
+    pub = _pub(
+        title="Stanford Biodesign Digital Health Group",
+        doi="10.5281/zenodo.21358702",
+        canonical_key="doi:10.5281/zenodo.21358702",
+        work_type=None,
+    )
+
+    upsert_publication(client, "ds_123", pub, KEEP, detected_date=date(2026, 1, 2))
+
+    assert "Draft Status" not in updated_body["properties"]
+    assert "Draft Error" not in updated_body["properties"]
+
+
+# --- researcher_names: same-run merging without a prior Notion write ---------------
+
+
+def test_researcher_names_param_creates_page_with_all_names(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    created_body: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/data_sources/ds_123/query":
+            return httpx.Response(200, json={"results": []})
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            nonlocal created_body
+            created_body = json.loads(request.content)
+            return httpx.Response(200, json={"id": "page-new-1"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    client = mock_notion_client(handler)
+    pub = _pub()
+
+    result = upsert_publication(
+        client,
+        "ds_123",
+        pub,
+        KEEP,
+        detected_date=date(2026, 1, 2),
+        researcher_names={"Ethan Goh", "Adam Rodman"},
+    )
+
+    assert result.action == "created"
+    names = {entry["name"] for entry in created_body["properties"]["Researchers"]["multi_select"]}
+    assert names == {"Ethan Goh", "Adam Rodman"}
+
+
+def test_dry_run_create_with_researcher_names_reports_both_in_one_line(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/data_sources/ds_123/query":
+            return httpx.Response(200, json={"results": []})
+        raise AssertionError("dry run must not perform create/update requests")
+
+    client = mock_notion_client(handler)
+    pub = _pub()
+
+    result = upsert_publication(
+        client,
+        "ds_123",
+        pub,
+        KEEP,
+        detected_date=date(2026, 1, 2),
+        dry_run=True,
+        researcher_names={"Ethan Goh", "Adam Rodman"},
+    )
+
+    assert result.action == "dry_run_create"
+    assert "Ethan Goh" in result.detail
+    assert "Adam Rodman" in result.detail
+
+
+# --- version_duplicate_note: appended to System Notes, canonical key untouched -----
+
+
+def test_version_duplicate_note_appended_to_system_notes(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    created_body: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/data_sources/ds_123/query":
+            return httpx.Response(200, json={"results": []})
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            nonlocal created_body
+            created_body = json.loads(request.content)
+            return httpx.Response(200, json={"id": "page-new-1"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    client = mock_notion_client(handler)
+    pub = _pub()
+    note = (
+        "Possible version duplicate of: doi:10.20944/preprints202607.0060.v1 "
+        "(title similarity 0.96, shared authors: Ethan Goh)"
+    )
+
+    upsert_publication(
+        client,
+        "ds_123",
+        pub,
+        KEEP,
+        detected_date=date(2026, 1, 2),
+        version_duplicate_note=note,
+    )
+
+    notes_text = created_body["properties"]["System Notes"]["rich_text"][0]["text"]["content"]
+    assert note in notes_text
+    # Canonical key itself is untouched by the version-duplicate note.
+    assert created_body["properties"]["Canonical Key"]["rich_text"][0]["text"]["content"] == (
+        pub.canonical_key
+    )
+
+
+def test_no_version_duplicate_note_by_default(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    created_body: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/data_sources/ds_123/query":
+            return httpx.Response(200, json={"results": []})
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            nonlocal created_body
+            created_body = json.loads(request.content)
+            return httpx.Response(200, json={"id": "page-new-1"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    client = mock_notion_client(handler)
+    upsert_publication(client, "ds_123", _pub(), KEEP, detected_date=date(2026, 1, 2))
+
+    notes_text = created_body["properties"]["System Notes"]["rich_text"][0]["text"]["content"]
+    assert "Possible version duplicate" not in notes_text

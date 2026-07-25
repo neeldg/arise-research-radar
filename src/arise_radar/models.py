@@ -47,6 +47,7 @@ class NormalizedPublication(BaseModel):
     concepts: list[str] = Field(default_factory=list)
     venue: str | None = None
     work_type: str | None = None
+    authors: list[str] = Field(default_factory=list)
 
 
 def compute_canonical_key(doi: str | None, openalex_work_id: str) -> str:

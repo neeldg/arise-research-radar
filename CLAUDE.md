@@ -370,6 +370,49 @@ Do not evaluate only on items that ARISE ultimately posts.
   `config/prompts/arise_linkedin_style.md` (distilled style principles,
   explicitly marked as a style reference only — never a source of facts).
 
+## Completed milestones (continued, 3)
+
+* **Pre-live-import roster safeguards.** Two narrow, deterministic
+  "Classify"/"Dedupe" pipeline stages (not the deferred broad fuzzy
+  deduplication — see "Deduplication strategy" above, which is still not
+  built), added ahead of the first 15-author live import after reviewing a
+  30-day roster dry run:
+  * **Work-type classification** (`src/arise_radar/work_types.py`):
+    classifies every discovered work as `article`, `preprint`, `conference`,
+    `editorial/viewpoint`, `protocol/registration`, `dataset/repository`, or
+    `unknown`, using OpenAlex type + venue + DOI prefix + title together
+    (never discards Zenodo/OSF records outright — both host a genuine mix of
+    conventional papers and other research objects). All records are still
+    retained (fail-open); the three non-eligible categories default to
+    `Draft Status = Needs Attention` with a clear `Draft Error` reason at
+    creation time only (never overwritten on resync, preserving human/
+    drafting-pipeline progress).
+  * **Version-family (possible-duplicate) flagging**
+    (`src/arise_radar/version_family.py`): strongly-normalized title
+    similarity (`difflib`, threshold 0.90) plus overlapping full paper
+    authorships (now captured via `NormalizedPublication.authors`, extracted
+    from OpenAlex `authorships` at no extra API cost) — both signals
+    required. Purely advisory: DOI canonical keys are never merged or
+    altered; a clear note is appended to `System Notes` linking the probable
+    other version(s) for a human to decide.
+  * **Same-run dedup before any Notion call**
+    (`src/arise_radar/dedupe.py`, `group_by_canonical_key`): a paper shared
+    by multiple roster researchers is grouped into one row *before*
+    `upsert_publication` is ever called, so `--notion-dry-run` (which never
+    persists between calls) reports one merged row instead of one
+    misleading "Would create" line per matching author.
+    `upsert_publication` gained an optional `researcher_names` param for
+    this (defaults to `{publication.researcher_name}`, fully backward
+    compatible).
+  * **Aggregate run summary** (`format_run_summary` in
+    `src/arise_radar/output.py`, printed once at the end of
+    `scripts/run_roster.py`): raw author-work matches, unique canonical
+    keys, existing/proposed-new rows (when Notion is enabled), shared-author
+    works, possible version duplicates, and non-standard research objects.
+  * No new Notion schema property was introduced (avoids needing a schema
+    migration run before go-live); everything surfaces through the existing
+    `System Notes`, `Draft Status`, and `Draft Error` fields.
+
 ## Current milestone
 
 Paper summarization and ARISE-style LinkedIn draft generation

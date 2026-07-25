@@ -2,9 +2,11 @@ from datetime import date
 
 from arise_radar.models import NormalizedPublication, Researcher
 from arise_radar.output import (
+    RunSummary,
     format_exclusion_summary,
     format_publications,
     format_relevance_summary,
+    format_run_summary,
     format_skip_warning,
 )
 from arise_radar.relevance import RelevanceDecision
@@ -92,3 +94,47 @@ def test_format_exclusion_summary_full_details() -> None:
     assert "pumpkin" in summary
     assert "W1" in summary
     assert "2026-01-01" in summary
+
+
+# --- format_run_summary -----------------------------------------------------------
+
+
+def test_format_run_summary_includes_all_counts() -> None:
+    summary = RunSummary(
+        raw_author_work_matches=12,
+        unique_canonical_keys=10,
+        existing_rows=2,
+        proposed_new_rows=8,
+        shared_author_works=3,
+        possible_version_duplicates=1,
+        non_standard_research_objects=2,
+    )
+    rendered = format_run_summary(summary)
+
+    assert "Raw author-work matches:" in rendered
+    assert "12" in rendered
+    assert "Unique canonical keys:" in rendered
+    assert "10" in rendered
+    assert "Existing rows:" in rendered
+    assert "2" in rendered
+    assert "Proposed new rows:" in rendered
+    assert "8" in rendered
+    assert "Shared-author works:" in rendered
+    assert "3" in rendered
+    assert "Possible version duplicates:" in rendered
+    assert "1" in rendered
+    assert "Non-standard research objects:" in rendered
+
+
+def test_format_run_summary_omits_notion_specific_counts_when_none() -> None:
+    summary = RunSummary(
+        raw_author_work_matches=5,
+        unique_canonical_keys=5,
+        shared_author_works=0,
+        possible_version_duplicates=0,
+        non_standard_research_objects=0,
+    )
+    rendered = format_run_summary(summary)
+
+    assert "Existing rows:" not in rendered
+    assert "Proposed new rows:" not in rendered
