@@ -275,12 +275,12 @@ def main(
                     _record_error(active_notion, page["id"], detail, run_date)
                 continue
 
-            # Validate before writing: real Anthropic JSON parsing (see
-            # AnthropicClient.generate_draft_content) never leaves escape
-            # syntax behind, so any hit here means the model emitted literal
-            # "\uXXXX"-looking text (or a broken surrogate) as content. Ship
-            # that silently and it renders as garbage in Notion — catch it
-            # here instead and never mark the row Drafted.
+            # Validate before writing. generate_draft_for_paper already retries
+            # Anthropic once internally if its first attempt contains literal
+            # escape sequences, so `content` here is the retry's result when a
+            # retry happened — this check validates it "normally," the same
+            # way it would a clean first attempt. If it's still corrupted
+            # after that retry, never mark the row Drafted.
             escape_problems = find_residual_escape_sequences_in_content(content)
             if escape_problems:
                 detail = (

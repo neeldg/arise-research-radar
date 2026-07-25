@@ -13,6 +13,7 @@ from arise_radar.drafting import (
     DraftingConfigError,
     DraftInput,
     build_prompt,
+    build_retry_prompt,
     determine_source_basis,
     find_residual_escape_sequences,
     find_residual_escape_sequences_in_content,
@@ -383,3 +384,111 @@ def test_find_residual_escape_sequences_in_content_clean_content_returns_empty()
     )
 
     assert find_residual_escape_sequences_in_content(content) == {}
+
+
+# --- build_retry_prompt -------------------------------------------------------------
+
+
+def test_build_retry_prompt_names_fields_and_shows_example_escape_and_character() -> None:
+    prompt = build_retry_prompt("ORIGINAL PROMPT", {"draft_social_post": ["\\u1f447"]})
+
+    assert prompt.startswith("ORIGINAL PROMPT")
+    assert "CORRECTION REQUIRED" in prompt
+    assert "draft_social_post" in prompt
+    # Clearly states the prior response contained literal escape syntax...
+    assert "\\u2014" in prompt or "\\u2022" in prompt
+    # ...and requires actual visible Unicode characters.
+    assert "—" in prompt
+    assert "•" in prompt
+
+
+# --- generate_draft_for_paper: retry exactly once on residual escape sequences -----
+
+
+def _corrupted_response_json() -> dict:
+    return _success_response_json(draft_social_post="Tap here \\u1f447 now.")
+
+
+def _clean_response_json() -> dict:
+    return _success_response_json(draft_social_post="Tap here 👇 now.")
+
+
+def test_generate_draft_for_paper_retries_once_when_first_attempt_corrupted(
+    mock_anthropic_client: Callable[..., AnthropicClient],
+) -> None:
+    call_count = {"n": 0}
+    captured_prompts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        captured_prompts.append(json.loads(request.content)["messages"][0]["content"])
+        if call_count["n"] == 1:
+            return httpx.Response(200, json=_corrupted_response_json())
+        return httpx.Response(200, json=_clean_response_json())
+
+    client = mock_anthropic_client(handler)
+    content = generate_draft_for_paper(client, _draft_input(), "STYLE_EXAMPLE", "STYLE_GUIDE")
+
+    assert call_count["n"] == 2
+    assert content.draft_social_post == "Tap here 👇 now."
+    assert find_residual_escape_sequences_in_content(content) == {}
+    # The retry prompt clearly names the affected field and shows a real
+    # example escape sequence and a real example character.
+    retry_prompt = captured_prompts[1]
+    assert "draft_social_post" in retry_prompt
+    assert "\\u2014" in retry_prompt or "\\u2022" in retry_prompt
+    assert "—" in retry_prompt or "•" in retry_prompt
+
+
+def test_generate_draft_for_paper_no_retry_when_first_attempt_clean(
+    mock_anthropic_client: Callable[..., AnthropicClient],
+) -> None:
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        return httpx.Response(200, json=_clean_response_json())
+
+    client = mock_anthropic_client(handler)
+    content = generate_draft_for_paper(client, _draft_input(), "STYLE_EXAMPLE", "STYLE_GUIDE")
+
+    assert call_count["n"] == 1
+    assert content.draft_social_post == "Tap here 👇 now."
+
+
+def test_generate_draft_for_paper_returns_still_corrupted_content_after_failed_retry(
+    mock_anthropic_client: Callable[..., AnthropicClient],
+) -> None:
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        return httpx.Response(200, json=_corrupted_response_json())
+
+    client = mock_anthropic_client(handler)
+    content = generate_draft_for_paper(client, _draft_input(), "STYLE_EXAMPLE", "STYLE_GUIDE")
+
+    assert call_count["n"] == 2
+    assert find_residual_escape_sequences_in_content(content) != {}
+
+
+def test_generate_draft_for_paper_propagates_error_raised_during_retry(
+    mock_anthropic_client: Callable[..., AnthropicClient],
+) -> None:
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return httpx.Response(200, json=_corrupted_response_json())
+        return httpx.Response(
+            400,
+            json={"type": "error", "error": {"type": "invalid_request_error", "message": "boom"}},
+        )
+
+    client = mock_anthropic_client(handler)
+
+    with pytest.raises(DraftGenerationError, match="Anthropic API request failed"):
+        generate_draft_for_paper(client, _draft_input(), "STYLE_EXAMPLE", "STYLE_GUIDE")
+
+    assert call_count["n"] == 2

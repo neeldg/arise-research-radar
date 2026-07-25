@@ -281,11 +281,49 @@ class AnthropicClient:
         return response.parsed_output
 
 
+def build_retry_prompt(original_prompt: str, escape_problems: dict[str, list[str]]) -> str:
+    """Ask the model to redo its response after find_residual_escape_sequences_in_content
+    found literal escape-looking text in it. Only ever appends a correction
+    instruction to the original prompt — never decodes, replaces, or
+    sanitizes the model's prior text itself.
+    """
+    fields = ", ".join(sorted(escape_problems))
+    correction = "\n".join(
+        [
+            "",
+            "=== CORRECTION REQUIRED ===",
+            "Your previous response contained literal Unicode escape sequences as "
+            "literal text (e.g. the characters \\u2014 or \\u2022 typed out) instead of "
+            f"real Unicode characters, in these field(s): {fields}.",
+            "Do not write escape syntax like \\u2014 or \\u2022 as text. Use the actual "
+            "visible Unicode characters directly — for example — (em dash) and • "
+            "(bullet) — not their escape sequences.",
+            "Regenerate the complete response with real Unicode characters throughout.",
+        ]
+    )
+    return original_prompt + correction
+
+
 def generate_draft_for_paper(
     anthropic_client: AnthropicClient,
     draft_input: DraftInput,
     style_example: str,
     style_guide: str,
 ) -> DraftContent:
+    """Generate a draft, retrying Anthropic exactly once if the first attempt
+    contains literal residual escape sequences (see
+    find_residual_escape_sequences_in_content). The first (corrupted) result
+    is never returned — callers only ever see the retry's result, which they
+    must still validate normally: if the retry is clean it's used as-is; if
+    it's still corrupted, the caller's own validation step catches that (as
+    it would for any other draft) and the row is never marked Drafted.
+    """
     prompt = build_prompt(draft_input, style_example, style_guide)
-    return anthropic_client.generate_draft_content(prompt)
+    content = anthropic_client.generate_draft_content(prompt)
+
+    escape_problems = find_residual_escape_sequences_in_content(content)
+    if not escape_problems:
+        return content
+
+    retry_prompt = build_retry_prompt(prompt, escape_problems)
+    return anthropic_client.generate_draft_content(retry_prompt)

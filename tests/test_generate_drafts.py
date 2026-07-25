@@ -678,10 +678,29 @@ def test_page_content_write_failure_is_recorded_and_never_marks_drafted(
     )
 
 
-# --- residual literal escape sequences: never mark Drafted, never touch page body --
+# --- residual literal escape sequences: retry once, recover, or fall back ----------
 
 
-def test_residual_escape_sequences_block_drafted_status(
+def _corrupted_anthropic_response_json() -> dict:
+    payload = {
+        "internal_summary": "Summary.",
+        "key_story_angle": "Angle.",
+        "why_it_matters": "Matters.",
+        "draft_social_post": "Tap here \\u1f447 now.",
+        "limitations": "None.",
+    }
+    return {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-opus-5",
+        "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": json.dumps(payload)}],
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+
+
+def test_both_attempts_corrupted_blocks_drafted_status_and_page_body(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     mock_notion_client: Callable[..., NotionClient],
@@ -689,34 +708,18 @@ def test_residual_escape_sequences_block_drafted_status(
     mock_anthropic_client: Callable[..., AnthropicClient],
 ) -> None:
     """If the model emits literal Unicode-escape-looking text (e.g. a literal
-    "\\u1f447" instead of an emoji), find_residual_escape_sequences_in_content
-    must catch it before any Notion write — the row must not be marked
-    Drafted, no page-body blocks may be written, and Draft Error must clearly
-    explain why."""
+    "\\u1f447" instead of an emoji) on both the first attempt and the single
+    retry, find_residual_escape_sequences_in_content must catch it before any
+    Notion write — the row must not be marked Drafted, no page-body blocks
+    may be written, and Draft Error must clearly explain why."""
     _set_env(monkeypatch)
     page = _notion_page("page-1")
     error_body: dict = {}
+    anthropic_call_count = {"n": 0}
 
     def corrupted_anthropic_handler(request: httpx.Request) -> httpx.Response:
-        payload = {
-            "internal_summary": "Summary.",
-            "key_story_angle": "Angle.",
-            "why_it_matters": "Matters.",
-            "draft_social_post": "Tap here \\u1f447 now.",
-            "limitations": "None.",
-        }
-        return httpx.Response(
-            200,
-            json={
-                "id": "msg_1",
-                "type": "message",
-                "role": "assistant",
-                "model": "claude-opus-5",
-                "stop_reason": "end_turn",
-                "content": [{"type": "text", "text": json.dumps(payload)}],
-                "usage": {"input_tokens": 1, "output_tokens": 1},
-            },
-        )
+        anthropic_call_count["n"] += 1
+        return httpx.Response(200, json=_corrupted_anthropic_response_json())
 
     def notion_handler(request: httpx.Request) -> httpx.Response:
         if (
@@ -745,12 +748,181 @@ def test_residual_escape_sequences_block_drafted_status(
     captured = capsys.readouterr()
 
     assert exit_code == 0
+    assert anthropic_call_count["n"] == 2  # first attempt + exactly one retry
     assert "error" in captured.out
     assert "drafted" not in captured.out
     assert error_body["properties"]["Draft Status"] == {"select": {"name": "Needs Attention"}}
     error_text = error_body["properties"]["Draft Error"]["rich_text"][0]["text"]["content"]
     assert "escape" in error_text.lower()
     assert "draft_social_post" in error_text
+
+
+def test_corrupted_first_attempt_clean_retry_produces_one_clean_write(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mock_notion_client: Callable[..., NotionClient],
+    mock_openalex_client: Callable[..., OpenAlexClient],
+    mock_anthropic_client: Callable[..., AnthropicClient],
+) -> None:
+    """A corrupted first attempt followed by a clean retry must produce
+    exactly one successful Notion write (page body + Drafted properties) —
+    the corrupted first result is never sent to Notion at all."""
+    _set_env(monkeypatch)
+    page = _notion_page("page-1")
+    updated_body: dict = {}
+    appended_children: list[dict] = []
+    anthropic_call_count = {"n": 0}
+
+    def anthropic_handler(request: httpx.Request) -> httpx.Response:
+        anthropic_call_count["n"] += 1
+        if anthropic_call_count["n"] == 1:
+            return httpx.Response(200, json=_corrupted_anthropic_response_json())
+        return httpx.Response(200, json=_anthropic_success_response().json())
+
+    def notion_handler(request: httpx.Request) -> httpx.Response:
+        if (
+            request.method == "POST"
+            and request.url.path == f"/v1/data_sources/{DATA_SOURCE_ID}/query"
+        ):
+            return httpx.Response(200, json={"results": [page]})
+        if request.method == "GET" and request.url.path == "/v1/blocks/page-1/children":
+            return httpx.Response(200, json={"results": [], "has_more": False, "next_cursor": None})
+        if request.method == "PATCH" and request.url.path == "/v1/blocks/page-1/children":
+            appended_children.extend(json.loads(request.content)["children"])
+            return httpx.Response(200, json={"results": []})
+        if request.method == "PATCH" and request.url.path == "/v1/pages/page-1":
+            nonlocal updated_body
+            updated_body = json.loads(request.content)
+            return httpx.Response(200, json={"id": "page-1"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    notion_client = mock_notion_client(notion_handler)
+    openalex_client = mock_openalex_client(_openalex_handler)
+    anthropic_client = mock_anthropic_client(anthropic_handler)
+
+    exit_code = main(
+        ["--write-notion"],
+        notion_client=notion_client,
+        openalex_client=openalex_client,
+        anthropic_client=anthropic_client,
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert anthropic_call_count["n"] == 2
+    assert "drafted" in captured.out
+    assert "error" not in captured.out
+    assert updated_body["properties"]["Draft Status"] == {"select": {"name": "Drafted"}}
+    # The clean retry's content (from _anthropic_success_response) landed in
+    # the page body -- the corrupted first attempt is nowhere in the payload.
+    full_text = "".join(
+        part["text"]["content"]
+        for block in appended_children
+        if block["type"] == "paragraph"
+        for part in block["paragraph"]["rich_text"]
+    )
+    assert "Great LinkedIn post." in full_text
+    assert "\\u1f447" not in full_text
+
+
+def test_clean_first_attempt_makes_exactly_one_anthropic_call(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_notion_client: Callable[..., NotionClient],
+    mock_openalex_client: Callable[..., OpenAlexClient],
+    mock_anthropic_client: Callable[..., AnthropicClient],
+) -> None:
+    """A clean first attempt must never trigger a retry."""
+    _set_env(monkeypatch)
+    page = _notion_page("page-1")
+    anthropic_call_count = {"n": 0}
+
+    def anthropic_handler(request: httpx.Request) -> httpx.Response:
+        anthropic_call_count["n"] += 1
+        return _anthropic_success_response()
+
+    notion_client = mock_notion_client(_notion_query_handler([page]))
+    openalex_client = mock_openalex_client(_openalex_handler)
+    anthropic_client = mock_anthropic_client(anthropic_handler)
+
+    exit_code = main(
+        [],  # preview mode is enough -- no Notion write needed for this assertion
+        notion_client=notion_client,
+        openalex_client=openalex_client,
+        anthropic_client=anthropic_client,
+    )
+
+    assert exit_code == 0
+    assert anthropic_call_count["n"] == 1
+
+
+def test_retry_api_failure_is_recorded_and_other_rows_still_process(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mock_notion_client: Callable[..., NotionClient],
+    mock_openalex_client: Callable[..., OpenAlexClient],
+    mock_anthropic_client: Callable[..., AnthropicClient],
+) -> None:
+    """If Anthropic itself fails during the retry call (after a corrupted
+    first attempt), that must surface as a clean per-row error (Needs
+    Attention) rather than an uncaught exception -- and it must not stop the
+    rest of the run from processing other rows."""
+    _set_env(monkeypatch)
+    page1 = _notion_page("page-1", canonical_key="doi:10.1/one")
+    page2 = _notion_page("page-2", canonical_key="doi:10.1/two")
+    error_body: dict = {}
+    anthropic_call_count = {"n": 0}
+
+    def anthropic_handler(request: httpx.Request) -> httpx.Response:
+        anthropic_call_count["n"] += 1
+        if anthropic_call_count["n"] == 1:
+            # page-1's first attempt: corrupted, triggers a retry.
+            return httpx.Response(200, json=_corrupted_anthropic_response_json())
+        if anthropic_call_count["n"] == 2:
+            # page-1's retry: the Anthropic API itself fails.
+            return httpx.Response(
+                500, json={"type": "error", "error": {"type": "api_error", "message": "boom"}}
+            )
+        # page-2: processes normally.
+        return _anthropic_success_response()
+
+    def notion_handler(request: httpx.Request) -> httpx.Response:
+        if (
+            request.method == "POST"
+            and request.url.path == f"/v1/data_sources/{DATA_SOURCE_ID}/query"
+        ):
+            return httpx.Response(200, json={"results": [page1, page2]})
+        if request.method == "PATCH" and request.url.path == "/v1/pages/page-1":
+            nonlocal error_body
+            error_body = json.loads(request.content)
+            return httpx.Response(200, json={"id": "page-1"})
+        if request.method == "PATCH" and request.url.path == "/v1/pages/page-2":
+            return httpx.Response(200, json={"id": "page-2"})
+        block_response = _block_write_response(request)
+        if block_response is not None:
+            return block_response
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    notion_client = mock_notion_client(notion_handler, max_retries=0)
+    openalex_client = mock_openalex_client(_openalex_handler)
+    anthropic_client = mock_anthropic_client(anthropic_handler, max_retries=0)
+
+    exit_code = main(
+        ["--write-notion"],
+        notion_client=notion_client,
+        openalex_client=openalex_client,
+        anthropic_client=anthropic_client,
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert anthropic_call_count["n"] == 3  # page-1 attempt + page-1 retry + page-2 attempt
+    assert "error" in captured.out
+    assert "drafted" in captured.out  # page-2 still succeeded
+    assert error_body["properties"]["Draft Status"] == {"select": {"name": "Needs Attention"}}
+    assert (
+        "Anthropic API request failed"
+        in error_body["properties"]["Draft Error"]["rich_text"][0]["text"]["content"]
+    )
 
 
 # --- Approved rows: page body is never touched -------------------------------------
