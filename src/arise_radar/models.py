@@ -9,7 +9,18 @@ from pydantic import BaseModel, Field
 
 
 class Researcher(BaseModel):
-    """A verified ARISE-affiliated researcher, ready to be queried against OpenAlex."""
+    """One person on the ARISE master roster (`config/roster.yaml`).
+
+    Covers both ends of the roster: publication/citation-active researchers
+    with a verified OpenAlex identity (`active: true`, `identity_status:
+    "verified"` or `"ambiguous"`), and media-monitoring-only names carried
+    for network completeness that don't yet have a confirmed scholarly ID
+    (`active: false`, `identity_status: "unverified"`, `openalex_id: null`).
+    Only the first group is ever queried against OpenAlex — see
+    `arise_radar.roster.active_verified_researchers` /
+    `unverified_researchers`, and `scripts/run_roster.py`'s
+    `_split_queryable`, which skips inactive and ID-less entries alike.
+    """
 
     id: str
     name: str
@@ -17,8 +28,14 @@ class Researcher(BaseModel):
     orcid: str | None = None
     aliases: list[str] = Field(default_factory=list)
     active: bool = True
-    identity_status: Literal["verified", "ambiguous"] = "verified"
+    identity_status: Literal["verified", "ambiguous", "unverified"] = "verified"
     relevance_filter: Literal["none", "healthcare_arise"] = "none"
+    # Optional network metadata, populated only where actually known (e.g.
+    # from https://arise-ai.org/team) -- never invented for a person it
+    # wasn't given for.
+    category: str | None = None
+    institution: str | None = None
+    role: str | None = None
 
 
 class SeedResearcher(BaseModel):

@@ -44,3 +44,20 @@ def load_seed_roster(path: Path) -> list[SeedResearcher]:
         return [SeedResearcher.model_validate(entry) for entry in entries]
     except ValidationError as exc:
         raise RosterError(f"Invalid seed record in {path}: {exc}") from exc
+
+
+def active_verified_researchers(researchers: list[Researcher]) -> list[Researcher]:
+    """Publication/citation-active researchers: a confirmed scholarly
+    identity the pipeline actually queries against OpenAlex. Ambiguous
+    identities (e.g. a merged OpenAlex author node, resolved via the
+    relevance filter) still count as active/verified here — only
+    `identity_status == "unverified"` or `active: false` excludes a record.
+    """
+    return [r for r in researchers if r.active and r.identity_status != "unverified"]
+
+
+def unverified_researchers(researchers: list[Researcher]) -> list[Researcher]:
+    """Media-monitoring-only names: carried on the roster for network
+    completeness, but with no confirmed scholarly identity yet, so never
+    queried against OpenAlex until reviewed and promoted."""
+    return [r for r in researchers if r.identity_status == "unverified"]
