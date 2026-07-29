@@ -88,14 +88,14 @@ def test_seed_roster_config_is_valid_and_keeps_both_david_wus() -> None:
     assert all(r.verification_status == "unverified" for r in seed)
 
 
-# --- master roster (config/roster.yaml): 15 active verified + 49 unverified -------
+# --- master roster (config/roster.yaml): 51 active verified + 13 unverified -------
 
 MASTER_ROSTER_PATH = REPO_ROOT / "config" / "roster.yaml"
 
-# The 15 pre-existing active/verified records and their OpenAlex IDs, exactly
-# as they were before the 49 new network-wide entries were added. Used to
-# assert nothing about them changed.
-EXPECTED_ACTIVE_VERIFIED_OPENALEX_IDS: dict[str, str] = {
+# The original 15 active/verified records and their OpenAlex IDs, from before
+# any network-wide entries were added. Used to assert nothing about them
+# changed across later promotion rounds.
+EXPECTED_ORIGINAL_15_OPENALEX_IDS: dict[str, str] = {
     "ethan_goh": "A5103153068",
     "jonathan_h_chen": "A5046725885",
     "adam_rodman": "A5045324950",
@@ -113,6 +113,64 @@ EXPECTED_ACTIVE_VERIFIED_OPENALEX_IDS: dict[str, str] = {
     "laura_zwaan": "A5041919544",
 }
 
+# The 36 records promoted from inactive/unverified to active/verified in this
+# round, with their manually verified OpenAlex IDs.
+EXPECTED_PROMOTED_36_OPENALEX_IDS: dict[str, str] = {
+    "mahbuba_tusty": "A5078318581",
+    "alice_zheng": "A5053188623",
+    "julia_lin": "A5086333331",
+    "andrew_parsons": "A5056867469",
+    "ivan_lopez": "A5084224715",
+    "luyang_luo": "A5027088988",
+    "irene_li": "A5101537931",
+    "selin_everett": "A5059103201",
+    "john_havlik": "A5023402479",
+    "priyank_jain": "A5085879637",
+    "adi_badhwar": "A5120582154",
+    "go_minjoung": "A5034530953",
+    "brian_han": "A5027667833",
+    "rebecca_handler": "A5120029659",
+    "zahir_kanjee": "A5078153391",
+    "samantha_wang": "A5000519450",
+    "david_jh_wu": "A5136100310",
+    "eric_strong": "A5060719053",
+    "rob_gallo": "A5066571318",
+    "hannah_kerman": "A5027576097",
+    "kameron_black": "A5014095820",
+    "saloni_maharaj": "A5043882260",
+    "nicholas_marshall": "A5111547980",
+    "poonam_hosamani": "A5029998947",
+    "andre_kumar": "A5089139721",
+    "josephine_cool": "A5034229757",
+    "jason_freed": "A5016620781",
+    "laura_holdsworth": "A5090558964",
+    "bryan_bunning": "A5040991704",
+    "jasmine_ong": "A5012027620",
+    "sarita_khemani": "A5120540633",
+    "austin_schoeffler": "A5084882398",
+    "david_wu": "A5034182517",
+    "daniel_yang": "A5101901305",
+    "kevin_schulman": "A5082094092",
+    "kanav_chopra": "A5134013754",
+}
+
+# Still inactive/unverified after this promotion round.
+EXPECTED_STILL_UNVERIFIED_IDS = {
+    "laura_wegner",
+    "anastasia_perez_ternent",
+    "arnie_milstein",
+    "cathy_liu",
+    "john_emmett_worth",
+    "chuk_anyaegbuna",
+    "joel_koh",
+    "thomas_buckley",
+    "stephen_ma",
+    "daniel_morgan",
+    "spencer_dorn",
+    "julie_lee",
+    "sai_balasubramanian",
+}
+
 
 def test_master_roster_has_64_unique_people() -> None:
     researchers = load_roster(MASTER_ROSTER_PATH)
@@ -124,21 +182,29 @@ def test_master_roster_has_64_unique_people() -> None:
     assert len(names) == len(set(names)), "duplicate names in master roster"
 
 
-def test_master_roster_has_15_active_verified_people() -> None:
+def test_master_roster_has_no_duplicate_openalex_ids() -> None:
+    researchers = load_roster(MASTER_ROSTER_PATH)
+    oids = [r.openalex_id for r in researchers if r.openalex_id]
+    assert len(oids) == len(set(oids)), "duplicate openalex_id in master roster"
+
+
+def test_master_roster_has_51_active_verified_people() -> None:
     researchers = load_roster(MASTER_ROSTER_PATH)
     active_verified = active_verified_researchers(researchers)
+    expected_ids = set(EXPECTED_ORIGINAL_15_OPENALEX_IDS) | set(EXPECTED_PROMOTED_36_OPENALEX_IDS)
 
-    assert len(active_verified) == 15
-    assert {r.id for r in active_verified} == set(EXPECTED_ACTIVE_VERIFIED_OPENALEX_IDS)
+    assert len(active_verified) == 51
+    assert {r.id for r in active_verified} == expected_ids
     assert all(r.active for r in active_verified)
     assert all(r.identity_status != "unverified" for r in active_verified)
 
 
-def test_master_roster_has_49_inactive_unverified_people() -> None:
+def test_master_roster_has_13_inactive_unverified_people() -> None:
     researchers = load_roster(MASTER_ROSTER_PATH)
     unverified = unverified_researchers(researchers)
 
-    assert len(unverified) == 49
+    assert len(unverified) == 13
+    assert {r.id for r in unverified} == EXPECTED_STILL_UNVERIFIED_IDS
     assert all(not r.active for r in unverified)
     assert all(r.identity_status == "unverified" for r in unverified)
     assert all(r.openalex_id is None for r in unverified)
@@ -167,8 +233,12 @@ def test_david_wu_and_david_jh_wu_remain_distinct() -> None:
     assert david_wu.id == "david_wu"
     assert david_jh_wu.id == "david_jh_wu"
     assert david_wu.id != david_jh_wu.id
-    assert not david_wu.active
-    assert not david_jh_wu.active
+    assert david_wu.openalex_id == "A5034182517"
+    assert david_jh_wu.openalex_id == "A5136100310"
+    assert david_wu.openalex_id != david_jh_wu.openalex_id
+    # Both were promoted in this round -- still two separate active records.
+    assert david_wu.active and david_wu.identity_status == "verified"
+    assert david_jh_wu.active and david_jh_wu.identity_status == "verified"
 
 
 def test_laura_wegner_and_laura_zwaan_remain_distinct() -> None:
@@ -187,23 +257,69 @@ def test_jason_hom_and_jason_freed_remain_distinct() -> None:
     jason_freed = by_name["Jason Freed"]
 
     assert jason_hom.id != jason_freed.id
+    assert jason_hom.openalex_id != jason_freed.openalex_id
+    # Jason Freed was promoted in this round -- both are now active/verified,
+    # but remain two separate records.
     assert jason_hom.active and jason_hom.identity_status == "verified"
-    assert not jason_freed.active and jason_freed.identity_status == "unverified"
+    assert jason_freed.active and jason_freed.identity_status == "verified"
 
 
 def test_no_existing_verified_record_changed() -> None:
     by_id = {r.id: r for r in load_roster(MASTER_ROSTER_PATH)}
 
-    for researcher_id, expected_openalex_id in EXPECTED_ACTIVE_VERIFIED_OPENALEX_IDS.items():
+    for researcher_id, expected_openalex_id in EXPECTED_ORIGINAL_15_OPENALEX_IDS.items():
         record = by_id[researcher_id]
         assert record.openalex_id == expected_openalex_id
         assert record.active is True
 
     # Jonathan H Chen is the one pre-existing "ambiguous" identity with a
     # non-default relevance filter and a second alias -- confirm none of
-    # that was disturbed by the batch of new entries.
+    # that was disturbed by later promotion rounds.
     jonathan = by_id["jonathan_h_chen"]
     assert jonathan.orcid == "0000-0002-4387-8740"
     assert jonathan.identity_status == "ambiguous"
     assert jonathan.relevance_filter == "healthcare_arise"
     assert jonathan.aliases == ["Jonathan H Chen", "Jonathan Chen"]
+
+
+def test_36_promoted_records_have_correct_openalex_ids_and_are_active_verified() -> None:
+    by_id = {r.id: r for r in load_roster(MASTER_ROSTER_PATH)}
+
+    for researcher_id, expected_openalex_id in EXPECTED_PROMOTED_36_OPENALEX_IDS.items():
+        record = by_id[researcher_id]
+        assert record.openalex_id == expected_openalex_id, researcher_id
+        assert record.active is True, researcher_id
+        assert record.identity_status == "verified", researcher_id
+        assert record.orcid is None, researcher_id  # no ORCID invented
+
+
+def test_promoted_records_preserve_category_institution_and_role() -> None:
+    by_id = {r.id: r for r in load_roster(MASTER_ROSTER_PATH)}
+
+    david_wu = by_id["david_wu"]
+    assert david_wu.category == "technical_staff"
+    assert david_wu.institution == "Harvard University"
+    assert david_wu.role == "Clinical AI Evaluation Lead"
+
+    kevin_schulman = by_id["kevin_schulman"]
+    assert kevin_schulman.category == "researcher_affiliate"
+    assert kevin_schulman.institution == "Stanford University"
+
+
+def test_austin_schoeffler_and_adi_badhwar_spelling_preserved() -> None:
+    by_id = {r.id: r for r in load_roster(MASTER_ROSTER_PATH)}
+
+    assert by_id["austin_schoeffler"].name == "Austin Schoeffler"
+    assert by_id["austin_schoeffler"].aliases == ["Austin Schoeffler"]
+    assert by_id["adi_badhwar"].name == "Adi Badhwar"
+    assert by_id["adi_badhwar"].aliases == ["Adi Badhwar"]
+
+
+def test_rob_gallo_keeps_canonical_name_and_gains_robert_gallo_alias() -> None:
+    rob_gallo = next(r for r in load_roster(MASTER_ROSTER_PATH) if r.id == "rob_gallo")
+
+    assert rob_gallo.name == "Rob Gallo"
+    assert rob_gallo.aliases == ["Rob Gallo", "Robert Gallo"]
+    assert rob_gallo.openalex_id == "A5066571318"
+    assert rob_gallo.active is True
+    assert rob_gallo.identity_status == "verified"

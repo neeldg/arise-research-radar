@@ -99,7 +99,7 @@ class NotionSetupConfig(BaseModel):
     parent_page_id: str
 
 
-def _require_env(names: Sequence[str], env: Mapping[str, str] | None) -> dict[str, str]:
+def require_env(names: Sequence[str], env: Mapping[str, str] | None) -> dict[str, str]:
     if env is None:
         # find_dotenv(usecwd=True): search for .env from the current working directory,
         # not from this module's location. Without usecwd, python-dotenv always finds
@@ -123,7 +123,7 @@ def load_notion_config(*, env: Mapping[str, str] | None = None) -> NotionConfig:
 
     Pass `env` explicitly in tests to avoid touching the real process environment.
     """
-    values = _require_env(("NOTION_TOKEN", "NOTION_DATA_SOURCE_ID"), env)
+    values = require_env(("NOTION_TOKEN", "NOTION_DATA_SOURCE_ID"), env)
     return NotionConfig(
         token=values["NOTION_TOKEN"], data_source_id=values["NOTION_DATA_SOURCE_ID"]
     )
@@ -131,7 +131,7 @@ def load_notion_config(*, env: Mapping[str, str] | None = None) -> NotionConfig:
 
 def load_notion_setup_config(*, env: Mapping[str, str] | None = None) -> NotionSetupConfig:
     """Load NOTION_TOKEN and NOTION_PARENT_PAGE_ID for the one-time setup script."""
-    values = _require_env(("NOTION_TOKEN", "NOTION_PARENT_PAGE_ID"), env)
+    values = require_env(("NOTION_TOKEN", "NOTION_PARENT_PAGE_ID"), env)
     return NotionSetupConfig(
         token=values["NOTION_TOKEN"], parent_page_id=values["NOTION_PARENT_PAGE_ID"]
     )
@@ -215,17 +215,44 @@ class NotionClient:
     def get_data_source(self, data_source_id: str) -> dict:
         return self._request("GET", f"/v1/data_sources/{data_source_id}")
 
+    def query_data_source_by_rich_text(
+        self, data_source_id: str, property_name: str, value: str
+    ) -> list[dict]:
+        """Exact-match query on a single rich_text property — the general
+        form of `query_data_source_by_canonical_key`, reused by
+        sinks/notion_citations.py for its own Citation Key lookups."""
+        body = {"filter": {"property": property_name, "rich_text": {"equals": value}}}
+        payload = self._request("POST", f"/v1/data_sources/{data_source_id}/query", json=body)
+        return payload.get("results", [])
+
     def query_data_source_by_canonical_key(
         self, data_source_id: str, canonical_key: str
     ) -> list[dict]:
-        body = {
-            "filter": {
-                "property": NotionProperties.CANONICAL_KEY,
-                "rich_text": {"equals": canonical_key},
-            }
-        }
-        payload = self._request("POST", f"/v1/data_sources/{data_source_id}/query", json=body)
-        return payload.get("results", [])
+        return self.query_data_source_by_rich_text(
+            data_source_id, NotionProperties.CANONICAL_KEY, canonical_key
+        )
+
+    def iter_data_source_pages(
+        self, data_source_id: str, *, filter: dict | None = None, page_size: int = 100
+    ) -> Iterator[dict]:
+        """Yield every row in a data source (or every row matching `filter`),
+        paginating via start_cursor — used to read the full tracked-paper
+        list for citation discovery (see sinks/notion_citations.py), where
+        an accurate "skipped, no OpenAlex ID" count requires seeing every
+        row, not just the ones a server-side filter would keep.
+        """
+        cursor: str | None = None
+        while True:
+            body: dict = {"page_size": page_size}
+            if filter:
+                body["filter"] = filter
+            if cursor:
+                body["start_cursor"] = cursor
+            payload = self._request("POST", f"/v1/data_sources/{data_source_id}/query", json=body)
+            yield from payload.get("results", [])
+            if not payload.get("has_more"):
+                return
+            cursor = payload.get("next_cursor")
 
     def query_eligible_drafts(
         self, data_source_id: str, *, limit: int, force: bool = False

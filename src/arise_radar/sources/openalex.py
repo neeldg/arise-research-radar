@@ -7,7 +7,7 @@ API into NormalizedPublication records, per the project's "normalize first" rule
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import date, timedelta
 
 import httpx
@@ -17,6 +17,11 @@ from arise_radar.models import NormalizedPublication, Researcher, compute_canoni
 DEFAULT_BASE_URL = "https://api.openalex.org"
 DEFAULT_PER_PAGE = 100
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+# OpenAlex's documented practical limit on the number of `|`-joined (OR)
+# values in a single filter clause. Citation batching (see
+# arise_radar.citations) defaults to this but the CLI can override it.
+DEFAULT_CITATION_BATCH_SIZE = 50
 
 
 class OpenAlexError(RuntimeError):
@@ -77,6 +82,61 @@ class OpenAlexClient:
             params["mailto"] = self._mailto
         return self._get(f"/works/{openalex_work_id}", params)
 
+    def search_authors(self, query: str, *, per_page: int = 25) -> list[dict]:
+        """Free-text search against OpenAlex's /authors endpoint (candidate
+        identity resolution — see arise_radar.identity_resolution). A single
+        page is sufficient here: this is a human-reviewed candidate list, not
+        an exhaustive fetch."""
+        params: dict[str, str | int] = {"search": query, "per_page": per_page}
+        if self._mailto:
+            params["mailto"] = self._mailto
+        payload = self._get("/authors", params)
+        return payload.get("results", [])
+
+    def iter_citing_works_batch(
+        self, tracked_work_ids: Sequence[str], *, since: date | None = None
+    ) -> Iterator[dict]:
+        """Yield raw citing-work records for ONE batch of tracked ARISE work
+        IDs, using the official `cites` filter joined with OR (`|`) —
+        never a researcher-name search. Paginates by cursor within the
+        batch. Batching itself (splitting a large tracked-ID list into
+        batches of a supported size) is the caller's responsibility — see
+        `arise_radar.citations.chunk_work_ids` — so that one failed batch
+        can be caught and skipped by the caller without this generator
+        losing the rest of its own pagination state.
+
+        Each returned work's `referenced_works` must be intersected against
+        the full tracked-ID set by the caller to recover exactly which
+        tracked paper(s) it cites — the `cites:A|B|C` filter only guarantees
+        "cites at least one of A, B, C," not which.
+        """
+        filter_value = f"cites:{'|'.join(tracked_work_ids)}"
+        if since is not None:
+            filter_value += f",from_publication_date:{since.isoformat()}"
+        params: dict[str, str | int] = {"filter": filter_value, "per_page": DEFAULT_PER_PAGE}
+        if self._mailto:
+            params["mailto"] = self._mailto
+
+        cursor = "*"
+        while cursor:
+            payload = self._get("/works", {**params, "cursor": cursor})
+            yield from payload.get("results", [])
+            cursor = payload.get("meta", {}).get("next_cursor") or ""
+
+    def get_recent_works(self, openalex_author_id: str, *, limit: int = 3) -> list[dict]:
+        """The `limit` most recent works for one candidate author, single page,
+        no cursor pagination — used only to show a reviewer a few
+        representative titles, not for the full publication pipeline."""
+        params: dict[str, str | int] = {
+            "filter": f"author.id:{openalex_author_id}",
+            "sort": "publication_date:desc",
+            "per_page": limit,
+        }
+        if self._mailto:
+            params["mailto"] = self._mailto
+        payload = self._get("/works", params)
+        return payload.get("results", [])
+
     def _get(self, path: str, params: dict[str, str | int]) -> dict:
         last_error: Exception | None = None
         for attempt in range(self._max_retries + 1):
@@ -121,13 +181,13 @@ def fetch_researcher_publications(
 
 
 def _normalize_work(researcher: Researcher, work: dict) -> NormalizedPublication:
-    doi = _clean_doi(work.get("doi"))
-    openalex_work_id = _short_id(work.get("id", ""))
+    doi = clean_doi(work.get("doi"))
+    openalex_work_id = short_openalex_id(work.get("id", ""))
     return NormalizedPublication(
         researcher_id=researcher.id,
         researcher_name=researcher.name,
         title=work.get("display_name") or work.get("title") or "Untitled",
-        publication_date=_parse_date(work.get("publication_date")),
+        publication_date=parse_openalex_date(work.get("publication_date")),
         doi=doi,
         openalex_id=openalex_work_id,
         canonical_key=compute_canonical_key(doi, openalex_work_id),
@@ -135,7 +195,7 @@ def _normalize_work(researcher: Researcher, work: dict) -> NormalizedPublication
         concepts=_extract_concepts(work),
         venue=_extract_venue(work),
         work_type=work.get("type"),
-        authors=_extract_authors(work),
+        authors=extract_author_names(work),
     )
 
 
@@ -163,9 +223,10 @@ def _extract_concepts(work: dict) -> list[str]:
     )
 
 
-def _extract_authors(work: dict) -> list[str]:
+def extract_author_names(work: dict) -> list[str]:
     """Full paper author list (not just the roster researcher who matched
-    this work) — used for cross-DOI version-family detection, where "the same
+    this work) — used for cross-DOI version-family detection and for citing
+    works' `citing_authors` (see arise_radar.citations), where "the same
     ARISE researcher" alone isn't a strong enough overlap signal. OpenAlex's
     works-list response already includes `authorships` by default, so this
     costs no extra API call."""
@@ -183,17 +244,17 @@ def _extract_venue(work: dict) -> str | None:
     return source.get("display_name")
 
 
-def _clean_doi(raw_doi: str | None) -> str | None:
+def clean_doi(raw_doi: str | None) -> str | None:
     if not raw_doi:
         return None
     return raw_doi.removeprefix("https://doi.org/").lower()
 
 
-def _short_id(raw_id: str) -> str:
+def short_openalex_id(raw_id: str) -> str:
     return raw_id.removeprefix("https://openalex.org/")
 
 
-def _parse_date(raw_date: str | None) -> date | None:
+def parse_openalex_date(raw_date: str | None) -> date | None:
     if not raw_date:
         return None
     return date.fromisoformat(raw_date)

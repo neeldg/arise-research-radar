@@ -254,3 +254,143 @@ def test_reconstruct_abstract_handles_repeated_words() -> None:
 def test_reconstruct_abstract_missing_returns_none() -> None:
     assert reconstruct_abstract({}) is None
     assert reconstruct_abstract({"abstract_inverted_index": None}) is None
+
+
+# --- search_authors / get_recent_works (identity resolution) ----------------------
+
+
+def test_search_authors_sends_search_query(
+    mock_openalex_client: Callable[..., OpenAlexClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/authors"
+        assert request.url.params.get("search") == "David Wu Harvard University"
+        return httpx.Response(
+            200, json={"results": [{"id": "https://openalex.org/A1", "display_name": "David Wu"}]}
+        )
+
+    client = mock_openalex_client(handler)
+    results = client.search_authors("David Wu Harvard University")
+
+    assert results == [{"id": "https://openalex.org/A1", "display_name": "David Wu"}]
+
+
+def test_search_authors_empty_results(mock_openalex_client: Callable[..., OpenAlexClient]) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"results": []})
+
+    client = mock_openalex_client(handler)
+    assert client.search_authors("Nobody Findable") == []
+
+
+def test_get_recent_works_filters_by_author_id_sorted_recent_first(
+    mock_openalex_client: Callable[..., OpenAlexClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/works"
+        assert request.url.params.get("filter") == "author.id:A1"
+        assert request.url.params.get("sort") == "publication_date:desc"
+        assert request.url.params.get("per_page") == "3"
+        return httpx.Response(
+            200, json={"results": [{"display_name": "Paper One", "publication_date": "2026-01-01"}]}
+        )
+
+    client = mock_openalex_client(handler)
+    results = client.get_recent_works("A1", limit=3)
+
+    assert results == [{"display_name": "Paper One", "publication_date": "2026-01-01"}]
+
+
+# --- iter_citing_works_batch (citation monitoring) ---------------------------------
+
+
+def test_iter_citing_works_batch_uses_cites_or_filter(
+    mock_openalex_client: Callable[..., OpenAlexClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/works"
+        assert request.url.params.get("filter") == "cites:W1|W2|W3"
+        return httpx.Response(200, json={"results": [], "meta": {"next_cursor": None}})
+
+    client = mock_openalex_client(handler)
+    results = list(client.iter_citing_works_batch(["W1", "W2", "W3"]))
+
+    assert results == []
+
+
+def test_iter_citing_works_batch_appends_since_filter(
+    mock_openalex_client: Callable[..., OpenAlexClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params.get("filter") == "cites:W1,from_publication_date:2026-01-01"
+        return httpx.Response(200, json={"results": [], "meta": {"next_cursor": None}})
+
+    client = mock_openalex_client(handler)
+    list(client.iter_citing_works_batch(["W1"], since=date(2026, 1, 1)))
+
+
+def test_iter_citing_works_batch_paginates_with_cursor(
+    mock_openalex_client: Callable[..., OpenAlexClient],
+) -> None:
+    seen_cursors: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cursor = request.url.params.get("cursor")
+        seen_cursors.append(cursor)
+        if cursor == "*":
+            return httpx.Response(
+                200,
+                json={
+                    "results": [{"id": "https://openalex.org/W900"}],
+                    "meta": {"next_cursor": "page2"},
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "results": [{"id": "https://openalex.org/W901"}],
+                "meta": {"next_cursor": None},
+            },
+        )
+
+    client = mock_openalex_client(handler)
+    results = list(client.iter_citing_works_batch(["W1"]))
+
+    assert seen_cursors == ["*", "page2"]
+    assert [r["id"] for r in results] == [
+        "https://openalex.org/W900",
+        "https://openalex.org/W901",
+    ]
+
+
+def test_iter_citing_works_batch_reuses_retry_backoff(
+    mock_openalex_client: Callable[..., OpenAlexClient],
+) -> None:
+    attempts = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            return httpx.Response(503, json={"error": "try again"})
+        return httpx.Response(200, json={"results": [], "meta": {"next_cursor": None}})
+
+    client = mock_openalex_client(handler, max_retries=3)
+    results = list(client.iter_citing_works_batch(["W1"]))
+
+    assert results == []
+    assert attempts["count"] == 3
+
+
+def test_iter_citing_works_batch_raises_after_exhausting_retries(
+    mock_openalex_client: Callable[..., OpenAlexClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "down"})
+
+    client = mock_openalex_client(handler, max_retries=2)
+
+    with pytest.raises(OpenAlexError):
+        list(client.iter_citing_works_batch(["W1"]))

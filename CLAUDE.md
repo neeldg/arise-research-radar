@@ -413,6 +413,45 @@ Do not evaluate only on items that ARISE ultimately posts.
     migration run before go-live); everything surfaces through the existing
     `System Notes`, `Draft Status`, and `Draft Error` fields.
 
+## Completed milestones (continued, 4)
+
+* **Citation monitoring, Phase 1** (`scripts/run_citations.py`,
+  `src/arise_radar/citations.py`, `src/arise_radar/sinks/notion_citations.py`).
+  Detects citation relationships to tracked ARISE papers via OpenAlex and
+  syncs them idempotently into a **separate** Citation Events Notion data
+  source (`NOTION_CITATIONS_DATA_SOURCE_ID`) — the publications data source
+  and schema are never touched. Slack delivery is a later phase; Phase 1
+  never sends a Slack message.
+  * `CitationEvent` canonical key: `citation:<short-citing-id>:<short-cited-id>`.
+  * Tracked papers are read from the existing publications data source
+    (`NotionClient.iter_data_source_pages`, new general-purpose paginated
+    query) — only rows with a valid OpenAlex work ID become a `TrackedWork`;
+    every other row is counted as skipped, never silently dropped. Never
+    searches OpenAlex by researcher name.
+  * OpenAlex citation retrieval (`OpenAlexClient.iter_citing_works_batch`)
+    uses the official `cites` filter, OR-batched (`cites:A|B|C`, default 50
+    IDs/batch, `--batch-size` overridable), cursor-paginated per batch,
+    reusing the client's existing retry/backoff. Each returned citing work's
+    `referenced_works` is intersected against the full tracked-ID set to
+    recover every exact edge — one citing paper citing N tracked papers
+    produces N `CitationEvent`s. One failed batch is recorded and never
+    stops the remaining batches.
+  * `--baseline` vs. incremental: `Baseline`, `Slack Status`, `Review
+    Status`, `Citation Relationship`, and `Relationship Evidence` are
+    create-only (see `sinks/notion_citations.py`'s update-properties
+    builder) — a resync (baseline or incremental) of an *existing* citation
+    key never touches them, which is what structurally guarantees a later
+    baseline run can never flip an existing non-baseline row back to
+    `Baseline = true`, and that human review progress and later-phase
+    classification are never reset.
+  * `--fixture-file` replaces both the tracked-works read and the OpenAlex
+    read for fully offline runs; `--write-notion` vs. the safe default
+    (dry-run preview, matching `generate_drafts.py`'s convention) is
+    orthogonal to it.
+  * `citation_relationship`/`relationship_evidence` default to
+    `"Unclassified"`/empty — the classification step described under
+    "Scholarly citation pipeline" above is not part of Phase 1.
+
 ## Current milestone
 
 Paper summarization and ARISE-style LinkedIn draft generation
@@ -450,7 +489,10 @@ Build only:
 
 Do not currently build:
 
-* citation monitoring,
+* citation-relationship classification (applies/extends/validates/critiques/
+  mentions) or Slack delivery — citation monitoring Phase 1 (detection +
+  idempotent Notion storage only) is built; see "Completed milestones
+  (continued, 4)" above,
 * media monitoring,
 * GitHub Actions,
 * broad fuzzy deduplication,

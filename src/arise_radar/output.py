@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from arise_radar.models import NormalizedPublication, Researcher
 from arise_radar.relevance import RelevanceDecision
 from arise_radar.sinks.notion import NotionUpsertResult
+from arise_radar.sinks.notion_citations import CitationUpsertResult
 
 NOTION_ACTION_LABELS: dict[str, str] = {
     "created": "Created",
@@ -162,3 +163,76 @@ def format_run_summary(summary: RunSummary) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+_CITATION_ACTION_LABELS: dict[str, str] = {
+    "created": "Created",
+    "dry_run_create": "Would create",
+    "updated": "Updated",
+    "dry_run_update": "Would update",
+    "skipped_duplicate": "Skipped (duplicate citation key)",
+    "error": "Errors",
+}
+_CITATION_DETAIL_ACTIONS = {"dry_run_create", "dry_run_update", "skipped_duplicate", "error"}
+
+
+def format_citation_notion_summary(results: Sequence[CitationUpsertResult]) -> str:
+    """The citation-events equivalent of format_notion_summary above, for
+    the separate Citation Events data source (see sinks/notion_citations.py)."""
+    if not results:
+        return "Citations: nothing to write."
+
+    counts: dict[str, int] = {}
+    for result in results:
+        counts[result.action] = counts.get(result.action, 0) + 1
+
+    lines = ["Citations:"]
+    for action in (
+        "created",
+        "dry_run_create",
+        "updated",
+        "dry_run_update",
+        "skipped_duplicate",
+        "error",
+    ):
+        if counts.get(action):
+            lines.append(f"  {_CITATION_ACTION_LABELS[action]}: {counts[action]}")
+
+    for result in results:
+        if result.action in _CITATION_DETAIL_ACTIONS:
+            lines.append(f"    [{result.action}] {result.citation_key}: {result.detail}")
+
+    return "\n".join(lines)
+
+
+class CitationRunSummary(BaseModel):
+    """One final, run-wide aggregate for scripts/run_citations.py — printed
+    once, after tracked-paper reading, OpenAlex discovery, and the Notion
+    citations sync are all complete."""
+
+    tracked_arise_papers: int
+    skipped_no_openalex_id: int
+    raw_citing_work_matches: int
+    unique_citation_edges: int
+    existing_citation_rows: int
+    proposed_new_citation_rows: int
+    baseline_suppressed_rows: int
+    new_slack_pending_rows: int
+    errors: int
+
+
+def format_citation_run_summary(summary: CitationRunSummary) -> str:
+    return "\n".join(
+        [
+            "Citation run summary:",
+            f"  Tracked ARISE papers:                  {summary.tracked_arise_papers}",
+            f"  Skipped (no OpenAlex ID):               {summary.skipped_no_openalex_id}",
+            f"  Raw citing-work matches:                {summary.raw_citing_work_matches}",
+            f"  Unique citation edges:                  {summary.unique_citation_edges}",
+            f"  Existing citation rows:                 {summary.existing_citation_rows}",
+            f"  Proposed new citation rows:              {summary.proposed_new_citation_rows}",
+            f"  Baseline-suppressed rows:                {summary.baseline_suppressed_rows}",
+            f"  New Slack-pending rows:                  {summary.new_slack_pending_rows}",
+            f"  Errors:                                  {summary.errors}",
+        ]
+    )
