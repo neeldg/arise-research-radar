@@ -29,7 +29,7 @@ NOTION_DRAFTED_STATUS = "Drafted"
 NOTION_NEEDS_ATTENTION_STATUS = "Needs Attention"
 
 DEFAULT_NOTION_BASE_URL = "https://api.notion.com"
-NOTION_API_VERSION = "2025-09-03"
+NOTION_API_VERSION = "2026-03-11"
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 NOTION_SOURCE_VALUE = "OpenAlex"
 NOTION_NEW_STATUS = "New"
@@ -138,7 +138,16 @@ def load_notion_setup_config(*, env: Mapping[str, str] | None = None) -> NotionS
 
 
 class NotionError(RuntimeError):
-    """Raised when the Notion API cannot be reached after bounded retries, or errors."""
+    """Raised when the Notion API cannot be reached after bounded retries, or errors.
+
+    `status_code` is the HTTP status Notion returned (None for a transport-level
+    failure with no response at all), so callers can give a specific, actionable
+    explanation for common cases like 401/403/404/409 without parsing message text.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class NotionClient:
@@ -211,6 +220,13 @@ class NotionClient:
             if (block.get("child_database") or {}).get("title") == title:
                 return block
         return None
+
+    def get_database(self, database_id: str) -> dict:
+        """A multi-source-database object, including its `data_sources` array
+        (each a bare `{"id", "name"}`) — used to find an existing named data
+        source under a database whose id is already known (e.g. from
+        find_child_database), without guessing a data source id."""
+        return self._request("GET", f"/v1/databases/{database_id}")
 
     def get_data_source(self, data_source_id: str) -> dict:
         return self._request("GET", f"/v1/data_sources/{data_source_id}")
@@ -373,7 +389,8 @@ class NotionClient:
                 if response.status_code not in RETRYABLE_STATUS_CODES:
                     raise NotionError(
                         f"Notion API returned HTTP {response.status_code} for "
-                        f"{method} {path}: {response.text}"
+                        f"{method} {path}: {response.text}",
+                        status_code=response.status_code,
                     )
                 last_error = httpx.HTTPStatusError(
                     f"Notion API returned HTTP {response.status_code}",
@@ -384,8 +401,14 @@ class NotionClient:
             if attempt < self._max_retries:
                 time.sleep(self._backoff_seconds * (2**attempt))
 
+        status_code = (
+            last_error.response.status_code
+            if isinstance(last_error, httpx.HTTPStatusError)
+            else None
+        )
         raise NotionError(
-            f"Notion API request failed after {self._max_retries + 1} attempt(s): {last_error}"
+            f"Notion API request failed after {self._max_retries + 1} attempt(s): {last_error}",
+            status_code=status_code,
         )
 
 
@@ -708,6 +731,25 @@ def read_select(page: dict, property_name: str) -> str | None:
 
 def read_multi_select_names(page: dict, property_name: str) -> list[str]:
     return sorted(_read_multi_select(page, property_name))
+
+
+def read_url(page: dict, property_name: str) -> str | None:
+    prop = (page.get("properties") or {}).get(property_name) or {}
+    return prop.get("url") or None
+
+
+def read_date(page: dict, property_name: str) -> str | None:
+    """The date's ISO `start` string (e.g. "2026-01-15"), or None. Returned
+    as the raw string rather than a `date` — callers that need to parse it
+    can, but most (e.g. Slack message rendering) just display it as-is."""
+    prop = (page.get("properties") or {}).get(property_name) or {}
+    date_value = prop.get("date")
+    return date_value.get("start") if date_value else None
+
+
+def read_checkbox(page: dict, property_name: str) -> bool:
+    prop = (page.get("properties") or {}).get(property_name) or {}
+    return bool(prop.get("checkbox"))
 
 
 # --- draft property builders ----------------------------------------------------

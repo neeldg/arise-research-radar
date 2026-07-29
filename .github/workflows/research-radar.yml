@@ -1,10 +1,14 @@
 name: Research Radar
 
 # Scheduled + manually-triggerable run of the ARISE Research Radar pipeline:
-# OpenAlex roster discovery -> Notion upsert -> draft generation. Never
-# publishes anything -- every generated item lands in Notion for human
-# review (see CLAUDE.md). Lint and tests must pass before any live pipeline
-# step runs, so a broken change never reaches Notion or Anthropic.
+# OpenAlex roster discovery -> Notion upsert -> draft generation -> incremental
+# citation discovery -> Notion upsert -> citation Slack notifications. Never
+# publishes anything to social platforms -- every generated item lands in
+# Notion for human review (see CLAUDE.md). The only outbound message this
+# workflow ever sends is the citation Slack notification itself, and only for
+# incrementally-discovered, non-baseline citation events (see the citation
+# steps below). Lint and tests must pass before any live pipeline step runs,
+# so a broken change never reaches Notion, Anthropic, or Slack.
 
 on:
   workflow_dispatch:
@@ -75,3 +79,67 @@ jobs:
           python scripts/generate_drafts.py \
             --limit 10 \
             --write-notion
+
+      # --error-report writes into logs/, which is gitignored/untracked and
+      # does not exist in a fresh checkout.
+      - name: Create logs directory
+        run: mkdir -p logs
+
+      # 30-day lookback intentionally overlaps every previous run; the
+      # Citation Key upsert (src/arise_radar/sinks/notion_citations.py) makes
+      # reruns idempotent, so the overlap only adds resilience to a missed
+      # run -- it never creates duplicate rows. NEVER pass --baseline here:
+      # that flag is only for the one-time historical import (already done --
+      # 4,512 rows with Baseline=true/Slack Status=Suppressed) and marks
+      # every discovered row Suppressed instead of Pending, which would
+      # silently stop new citations from ever reaching Slack. Only
+      # NOTION_CITATIONS_DATA_SOURCE_ID is added at step level -- NOTION_TOKEN
+      # and NOTION_DATA_SOURCE_ID already come from the job-level env above;
+      # this step never touches Slack and gets no Slack secret.
+      - name: Discover recent citations and sync to Notion
+        env:
+          NOTION_CITATIONS_DATA_SOURCE_ID: ${{ secrets.NOTION_CITATIONS_DATA_SOURCE_ID }}
+        run: |
+          python -u scripts/run_citations.py \
+            --since-days 30 \
+            --write-notion \
+            --error-report logs/citation_incremental_errors.json
+
+      # Only rows the previous step just left Slack Status=Pending are ever
+      # posted (see arise_radar.notifications.citations.scan_citation_rows):
+      # historical Baseline=true/Suppressed rows and already-Sent rows are
+      # never candidates, and --retry-failed is deliberately omitted so a
+      # transient failure needs a deliberate manual rerun, not a silent
+      # automatic repost. Runs only if the citation-discovery step above
+      # succeeded (GitHub Actions' default step behavior) -- a catastrophic
+      # discovery failure (bad config, Notion unreachable) must not reach
+      # Slack at all; a completed discovery run with per-row errors still
+      # exits 0 and this step still runs, matching run_citations.py's
+      # existing distinction between fatal and record-level failures. Scoped
+      # to exactly the four secrets this script reads -- no
+      # NOTION_DATA_SOURCE_ID, no ANTHROPIC_*, no SLACK_PAPERS_CHANNEL_ID.
+      - name: Send citation Slack notifications
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_CITATIONS_DATA_SOURCE_ID: ${{ secrets.NOTION_CITATIONS_DATA_SOURCE_ID }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_SIGNALS_CHANNEL_ID: ${{ secrets.SLACK_SIGNALS_CHANNEL_ID }}
+        run: |
+          python -u scripts/send_citation_notifications.py \
+            --send \
+            --error-report logs/citation_slack_errors.json
+
+      # always(): both error-report files should be inspectable even when a
+      # step above failed (record-level errors) or was skipped (a
+      # catastrophic upstream failure, in which case a file may legitimately
+      # be missing -- if-no-files-found: warn surfaces that without failing
+      # the run over a report that was never expected to exist).
+      - name: Upload citation error reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: citation-error-reports
+          path: |
+            logs/citation_incremental_errors.json
+            logs/citation_slack_errors.json
+          if-no-files-found: warn

@@ -16,3 +16,5 @@ config/roster.local.yaml
 .env
 .env.*
 !.env.example
+
+logs/

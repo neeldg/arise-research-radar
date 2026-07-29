@@ -1,0 +1,92 @@
+{
+  "_comment": "Example fixture for scripts/resolve_roster_identities.py --fixture-file. Keyed by roster researcher id; each candidate is a native-shaped OpenAlex /authors result with an added 'recent_works' list (native-shaped OpenAlex /works results). Copy this shape when hand-building a fixture for offline review.",
+  "david_wu": {
+    "candidates": [
+      {
+        "id": "https://openalex.org/A5011111111",
+        "display_name": "David Wu",
+        "orcid": "https://orcid.org/0000-0001-1111-1111",
+        "works_count": 45,
+        "cited_by_count": 620,
+        "last_known_institutions": [{ "display_name": "Harvard University" }],
+        "affiliations": [
+          {
+            "institution": { "display_name": "Harvard University" },
+            "years": [2023, 2024, 2025]
+          }
+        ],
+        "topics": [{ "display_name": "Clinical decision support" }],
+        "recent_works": [
+          {
+            "display_name": "Evaluating LLMs for Clinical AI Chart Review",
+            "publication_date": "2026-01-01"
+          }
+        ]
+      },
+      {
+        "id": "https://openalex.org/A5022222222",
+        "display_name": "David Wu",
+        "orcid": null,
+        "works_count": 300,
+        "cited_by_count": 12000,
+        "last_known_institutions": [{ "display_name": "University of Toronto" }],
+        "affiliations": [
+          {
+            "institution": { "display_name": "University of Toronto" },
+            "years": [2010, 2011]
+          }
+        ],
+        "topics": [{ "display_name": "Semiconductor physics" }],
+        "recent_works": []
+      }
+    ]
+  },
+  "david_jh_wu": {
+    "candidates": [
+      {
+        "id": "https://openalex.org/A5033333333",
+        "display_name": "David J.H. Wu",
+        "orcid": "https://orcid.org/0000-0002-2222-2222",
+        "works_count": 12,
+        "cited_by_count": 80,
+        "last_known_institutions": [{ "display_name": "Stanford University" }],
+        "affiliations": [
+          {
+            "institution": { "display_name": "Stanford University" },
+            "years": [2024, 2025]
+          }
+        ],
+        "topics": [{ "display_name": "Medical education" }],
+        "recent_works": [
+          {
+            "display_name": "Clerkship Curriculum Redesign for AI Literacy",
+            "publication_date": "2025-06-01"
+          }
+        ]
+      }
+    ]
+  },
+  "laura_wegner": {
+    "candidates": []
+  },
+  "sai_balasubramanian": {
+    "candidates": [
+      {
+        "id": "https://openalex.org/A5044444444",
+        "display_name": "Sai Balasubramanian",
+        "orcid": null,
+        "works_count": 5,
+        "cited_by_count": 20,
+        "last_known_institutions": [{ "display_name": "Unrelated Consulting Group" }],
+        "affiliations": [
+          {
+            "institution": { "display_name": "Unrelated Consulting Group" },
+            "years": [2021]
+          }
+        ],
+        "topics": [{ "display_name": "Marketing" }],
+        "recent_works": []
+      }
+    ]
+  }
+}

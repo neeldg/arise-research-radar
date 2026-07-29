@@ -85,7 +85,16 @@ class SlackError(RuntimeError):
     as this. Slack's Web API returns HTTP 200 for those; they're routine,
     expected API outcomes for the caller to inspect via the returned dict's
     `ok`/`error` keys, not transport failures.
+
+    `status_code` is the HTTP status Slack returned (None for a
+    transport-level failure with no response at all), mirroring
+    NotionError.status_code — lets callers report it without parsing
+    message text.
     """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class SlackClient:
@@ -136,8 +145,15 @@ class SlackClient:
         # instead of slack.com/api/auth.test.
         return self._post("auth.test", json={})
 
-    def post_message(self, channel: str, text: str) -> dict:
-        return self._post("chat.postMessage", json={"channel": channel, "text": text})
+    def post_message(self, channel: str, text: str, *, blocks: list[dict] | None = None) -> dict:
+        """`text` is always sent as the complete plain-text fallback (Slack
+        shows it in notifications/surfaces that don't render blocks, and
+        requires a non-empty top-level text regardless). `blocks`, when
+        given, is the richer Block Kit rendering shown in the channel."""
+        body: dict = {"channel": channel, "text": text}
+        if blocks is not None:
+            body["blocks"] = blocks
+        return self._post("chat.postMessage", json=body)
 
     def _post(self, path: str, *, json: dict) -> dict:
         last_error: Exception | None = None
@@ -153,7 +169,8 @@ class SlackClient:
                 if response.status_code not in RETRYABLE_STATUS_CODES:
                     raise SlackError(
                         f"Slack API returned HTTP {response.status_code} for POST {path}: "
-                        f"{response.text}"
+                        f"{response.text}",
+                        status_code=response.status_code,
                     )
                 last_error = httpx.HTTPStatusError(
                     f"Slack API returned HTTP {response.status_code}",
@@ -164,6 +181,12 @@ class SlackClient:
             if attempt < self._max_retries:
                 time.sleep(self._backoff_seconds * (2**attempt))
 
+        status_code = (
+            last_error.response.status_code
+            if isinstance(last_error, httpx.HTTPStatusError)
+            else None
+        )
         raise SlackError(
-            f"Slack API request failed after {self._max_retries + 1} attempt(s): {last_error}"
+            f"Slack API request failed after {self._max_retries + 1} attempt(s): {last_error}",
+            status_code=status_code,
         )

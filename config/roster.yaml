@@ -177,12 +177,12 @@ researchers:
 
   - id: david_wu
     name: David Wu
-    openalex_id: null
+    openalex_id: A5034182517
     orcid: null
     aliases:
       - David Wu
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: technical_staff
     institution: Harvard University
@@ -239,24 +239,24 @@ researchers:
 
   - id: julia_lin
     name: Julia Lin
-    openalex_id: null
+    openalex_id: A5086333331
     orcid: null
     aliases:
       - Julia Lin
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: mahbuba_tusty
     name: Mahbuba Tusty
-    openalex_id: null
+    openalex_id: A5078318581
     orcid: null
     aliases:
       - Mahbuba Tusty
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
@@ -275,24 +275,24 @@ researchers:
 
   - id: alice_zheng
     name: Alice Zheng
-    openalex_id: null
+    openalex_id: A5053188623
     orcid: null
     aliases:
       - Alice Zheng
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Harvard University
 
   - id: andrew_parsons
     name: Andrew Parsons
-    openalex_id: null
+    openalex_id: A5056867469
     orcid: null
     aliases:
       - Andrew Parsons
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: University of Virginia
@@ -311,36 +311,36 @@ researchers:
 
   - id: ivan_lopez
     name: Ivan Lopez
-    openalex_id: null
+    openalex_id: A5084224715
     orcid: null
     aliases:
       - Ivan Lopez
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: luyang_luo
     name: Luyang Luo
-    openalex_id: null
+    openalex_id: A5027088988
     orcid: null
     aliases:
       - Luyang Luo
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Harvard University
 
   - id: irene_li
     name: Irene Li
-    openalex_id: null
+    openalex_id: A5101537931
     orcid: null
     aliases:
       - Irene Li
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: University of Tokyo
@@ -359,12 +359,12 @@ researchers:
 
   - id: selin_everett
     name: Selin Everett
-    openalex_id: null
+    openalex_id: A5059103201
     orcid: null
     aliases:
       - Selin Everett
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
@@ -383,60 +383,60 @@ researchers:
 
   - id: john_havlik
     name: John Havlik
-    openalex_id: null
+    openalex_id: A5023402479
     orcid: null
     aliases:
       - John Havlik
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: austin_schoeffler
     name: Austin Schoeffler
-    openalex_id: null
+    openalex_id: A5084882398
     orcid: null
     aliases:
       - Austin Schoeffler
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: priyank_jain
     name: Priyank Jain
-    openalex_id: null
+    openalex_id: A5085879637
     orcid: null
     aliases:
       - Priyank Jain
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Harvard University
 
   - id: adi_badhwar
     name: Adi Badhwar
-    openalex_id: null
+    openalex_id: A5120582154
     orcid: null
     aliases:
       - Adi Badhwar
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: go_minjoung
     name: Go Minjoung
-    openalex_id: null
+    openalex_id: A5034530953
     orcid: null
     aliases:
       - Go Minjoung
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
@@ -467,36 +467,36 @@ researchers:
 
   - id: brian_han
     name: Brian Han
-    openalex_id: null
+    openalex_id: A5027667833
     orcid: null
     aliases:
       - Brian Han
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: rebecca_handler
     name: Rebecca Handler
-    openalex_id: null
+    openalex_id: A5120029659
     orcid: null
     aliases:
       - Rebecca Handler
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: daniel_yang
     name: Daniel Yang
-    openalex_id: null
+    openalex_id: A5101901305
     orcid: null
     aliases:
       - Daniel Yang
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Kaiser Permanente
@@ -515,132 +515,133 @@ researchers:
 
   - id: kevin_schulman
     name: Kevin Schulman
-    openalex_id: null
+    openalex_id: A5082094092
     orcid: null
     aliases:
       - Kevin Schulman
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: kanav_chopra
     name: Kanav Chopra
-    openalex_id: null
+    openalex_id: A5134013754
     orcid: null
     aliases:
       - Kanav Chopra
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: zahir_kanjee
     name: Zahir Kanjee
-    openalex_id: null
+    openalex_id: A5078153391
     orcid: null
     aliases:
       - Zahir Kanjee
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Harvard University
 
   - id: samantha_wang
     name: Samantha Wang
-    openalex_id: null
+    openalex_id: A5000519450
     orcid: null
     aliases:
       - Samantha Wang
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: david_jh_wu
     name: David JH Wu
-    openalex_id: null
+    openalex_id: A5136100310
     orcid: null
     aliases:
       - David JH Wu
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: eric_strong
     name: Eric Strong
-    openalex_id: null
+    openalex_id: A5060719053
     orcid: null
     aliases:
       - Eric Strong
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: rob_gallo
     name: Rob Gallo
-    openalex_id: null
+    openalex_id: A5066571318
     orcid: null
     aliases:
       - Rob Gallo
-    active: false
-    identity_status: unverified
+      - Robert Gallo
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: hannah_kerman
     name: Hannah Kerman
-    openalex_id: null
+    openalex_id: A5027576097
     orcid: null
     aliases:
       - Hannah Kerman
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Harvard University
 
   - id: kameron_black
     name: Kameron Black
-    openalex_id: null
+    openalex_id: A5014095820
     orcid: null
     aliases:
       - Kameron Black
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: saloni_maharaj
     name: Saloni Maharaj
-    openalex_id: null
+    openalex_id: A5043882260
     orcid: null
     aliases:
       - Saloni Maharaj
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: nicholas_marshall
     name: Nicholas Marshall
-    openalex_id: null
+    openalex_id: A5111547980
     orcid: null
     aliases:
       - Nicholas Marshall
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
@@ -659,96 +660,96 @@ researchers:
 
   - id: poonam_hosamani
     name: Poonam Hosamani
-    openalex_id: null
+    openalex_id: A5029998947
     orcid: null
     aliases:
       - Poonam Hosamani
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: andre_kumar
     name: Andre Kumar
-    openalex_id: null
+    openalex_id: A5089139721
     orcid: null
     aliases:
       - Andre Kumar
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: josephine_cool
     name: Josephine Cool
-    openalex_id: null
+    openalex_id: A5034229757
     orcid: null
     aliases:
       - Josephine Cool
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Harvard University
 
   - id: jason_freed
     name: Jason Freed
-    openalex_id: null
+    openalex_id: A5016620781
     orcid: null
     aliases:
       - Jason Freed
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Harvard University
 
   - id: laura_holdsworth
     name: Laura Holdsworth
-    openalex_id: null
+    openalex_id: A5090558964
     orcid: null
     aliases:
       - Laura Holdsworth
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: bryan_bunning
     name: Bryan Bunning
-    openalex_id: null
+    openalex_id: A5040991704
     orcid: null
     aliases:
       - Bryan Bunning
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University
 
   - id: jasmine_ong
     name: Jasmine Ong
-    openalex_id: null
+    openalex_id: A5012027620
     orcid: null
     aliases:
       - Jasmine Ong
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Duke-NUS Medical School
 
   - id: sarita_khemani
     name: Sarita Khemani
-    openalex_id: null
+    openalex_id: A5120540633
     orcid: null
     aliases:
       - Sarita Khemani
-    active: false
-    identity_status: unverified
+    active: true
+    identity_status: verified
     relevance_filter: none
     category: researcher_affiliate
     institution: Stanford University

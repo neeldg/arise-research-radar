@@ -452,6 +452,99 @@ Do not evaluate only on items that ARISE ultimately posts.
     `"Unclassified"`/empty — the classification step described under
     "Scholarly citation pipeline" above is not part of Phase 1.
 
+## Completed milestones (continued, 5)
+
+* **Citation Slack delivery** (`scripts/send_citation_notifications.py`,
+  `src/arise_radar/notifications/citations.py`). Reads pending rows from
+  the Citation Events Notion data source, posts each to the ARISE Slack
+  signals channel (`SLACK_SIGNALS_CHANNEL_ID`), and records the delivery
+  result back onto the same row. Never reads the publications data source
+  or posts to the papers channel. This is delivery only — no
+  citation-relationship classification, and no Slack delivery for
+  publications or media items (still not built; see "Current milestone"
+  below).
+  * Candidate selection is a single bulk paginated read
+    (`NotionClient.iter_data_source_pages`, no per-row query), scanned and
+    partitioned in memory (`scan_citation_rows`): a row is only ever a
+    candidate when `Baseline = false` and `Slack Status` is `Pending` (or,
+    with `--retry-failed`, also `Failed`) — `Suppressed` and `Sent` rows are
+    never selected, and `Baseline = true` is a hard safety net independent
+    of `Slack Status`. A Citation Key shared by more than one stored page is
+    a data-integrity problem, not something to guess a winner for: every
+    copy is skipped and reported in `duplicate_keys`, never posted.
+  * Every Notion write goes straight to the page ID already known from the
+    bulk scan — never a lookup, matching the same request-count discipline
+    as `run_citations.py`'s `CitationRowIndex`.
+  * On success: `Slack Status = Sent` and `Slack Timestamp` are set from
+    Slack's returned `ts` — only if Slack returned both `ok: true` *and* a
+    timestamp. `Review Status`, `Citation Relationship`, `Relationship
+    Evidence`, and everything else on the row is left untouched.
+  * On failure: `Slack Status = Failed` and a concise, prefixed note
+    (`[Slack delivery] ...`) is appended to `System Notes` — the existing
+    value is read from the same bulk scan and appended to, never replaced,
+    so unrelated existing notes survive. The rare case where Slack accepts
+    the message but the follow-up Notion write itself fails is reported as
+    its own category (`notion_update_after_send`) with `Slack Status`
+    deliberately left unchanged, rather than guessing `Sent` or `Failed` —
+    either guess risks either hiding a real gap or causing a future
+    `--retry-failed` run to double-post.
+  * Safe default: no `--send` flag means dry run — every candidate is
+    scanned and its rendered Slack message (text + Block Kit) is printed as
+    a preview, but no Slack call and no Notion write happens. `--send` is
+    required for live delivery; `--limit`, `--citation-key`, and
+    `--retry-failed` narrow the candidate set the same way in both modes.
+  * `--error-report PATH` writes every delivery failure and duplicate-key
+    conflict as structured JSON (`citation_key`, `notion_page_id`, `stage`,
+    `slack_error_code`, `status_code`, `error`).
+  * `SlackClient.post_message` gained an optional `blocks` param (backward
+    compatible — `scripts/test_slack_connection.py` still calls it with
+    plain text only); `SlackError` gained `status_code`, mirroring
+    `NotionError`.
+
+## Completed milestones (continued, 6)
+
+* **Citation discovery and Slack delivery wired into the daily GitHub
+  Actions workflow** (`.github/workflows/research-radar.yml`). Extends the
+  existing scheduled/manual `research-radar` workflow rather than adding a
+  competing one — roster discovery and draft generation are unchanged. Two
+  new steps run after them, in order: incremental citation discovery
+  (`run_citations.py --since-days 30 --write-notion`, never `--baseline` —
+  that flag is reserved for the one-time historical import, already done:
+  4,512 rows with `Baseline=true`/`Slack Status=Suppressed`) and citation
+  Slack delivery (`send_citation_notifications.py --send`, no
+  `--retry-failed`, so a transient failure requires a deliberate manual
+  rerun rather than an automatic repost).
+  * Both new steps use `python -u` and write a structured `--error-report`
+    into `logs/` (created by a preceding `mkdir -p logs` step, since `logs/`
+    is untracked and doesn't exist in a fresh checkout); both reports are
+    uploaded as a `citation-error-reports` artifact by a final step with
+    `if: always()` (`if-no-files-found: warn`), so record-level errors and
+    duplicate-key conflicts stay inspectable even when a step fails.
+  * The Slack-delivery step has no explicit `if:` — GitHub Actions' default
+    "only run if the previous step succeeded" is what's relied on. This is
+    safe specifically because `run_citations.py` already exits 0 for
+    record-level/per-row errors (still writing its error report) and only
+    exits nonzero for genuinely fatal failures (bad config, Notion
+    unreachable) — so a catastrophic discovery failure correctly skips
+    Slack delivery, while ordinary per-row errors don't.
+  * Secrets are scoped per step, not broadened at the job level: the
+    existing job-level `env` (`NOTION_TOKEN`, `NOTION_DATA_SOURCE_ID`,
+    `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`) is untouched; the citation
+    discovery step adds only `NOTION_CITATIONS_DATA_SOURCE_ID` at step
+    level; the Slack-delivery step declares its own complete, step-level env
+    (`NOTION_TOKEN`, `NOTION_CITATIONS_DATA_SOURCE_ID`, `SLACK_BOT_TOKEN`,
+    `SLACK_SIGNALS_CHANNEL_ID`) — no `SLACK_PAPERS_CHANNEL_ID`, no
+    `ANTHROPIC_*`, no `NOTION_DATA_SOURCE_ID`.
+  * No new concurrency block: the existing repository-level `research-radar`
+    group (`cancel-in-progress: false`) already covers the whole job,
+    including the new citation steps, so two scheduled/manual runs still
+    can't write the same citation events at once and an in-progress write
+    is never killed mid-way. `workflow_dispatch` is unchanged.
+  * No new workflow-validation test utility was added: none existed to
+    update, and the repository has no established pattern of testing GitHub
+    Actions YAML structure — adding one now would be exactly the kind of
+    formatting-brittle test the project avoids elsewhere.
+
 ## Current milestone
 
 Paper summarization and ARISE-style LinkedIn draft generation
@@ -490,11 +583,12 @@ Build only:
 Do not currently build:
 
 * citation-relationship classification (applies/extends/validates/critiques/
-  mentions) or Slack delivery — citation monitoring Phase 1 (detection +
-  idempotent Notion storage only) is built; see "Completed milestones
-  (continued, 4)" above,
+  mentions) — citation monitoring Phase 1 (detection + idempotent Notion
+  storage only) is built; see "Completed milestones (continued, 4)" above.
+  Slack delivery *for citation events* is now built (see "Completed
+  milestones (continued, 5)"), but Slack delivery for publications or media
+  items is not,
 * media monitoring,
-* GitHub Actions,
 * broad fuzzy deduplication,
 * automatic publishing,
 * human approval workflow beyond the existing `Draft Status` select (still
