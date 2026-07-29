@@ -2,7 +2,9 @@ from datetime import date
 
 from arise_radar.models import NormalizedPublication, Researcher
 from arise_radar.output import (
+    CitationRunSummary,
     RunSummary,
+    format_citation_run_summary,
     format_exclusion_summary,
     format_publications,
     format_relevance_summary,
@@ -142,3 +144,35 @@ def test_format_run_summary_omits_notion_specific_counts_when_none() -> None:
 
     assert "Existing rows:" not in rendered
     assert "Proposed new rows:" not in rendered
+
+
+# --- format_citation_run_summary: error categories never combined -----------------
+
+
+def test_format_citation_run_summary_keeps_error_categories_separate() -> None:
+    summary = CitationRunSummary(
+        tracked_arise_papers=5,
+        skipped_no_openalex_id=0,
+        raw_citing_work_matches=10,
+        unique_citation_edges=8,
+        existing_citation_rows=2,
+        proposed_new_citation_rows=6,
+        baseline_suppressed_rows=0,
+        new_slack_pending_rows=6,
+        openalex_batch_errors=1,
+        notion_read_errors=0,
+        notion_create_errors=2,
+        notion_update_errors=3,
+        duplicate_stored_citation_keys=4,
+        malformed_stored_rows=5,
+    )
+    rendered = format_citation_run_summary(summary)
+
+    assert "OpenAlex batch errors:" in rendered
+    assert "Notion citation-data-source read errors:" in rendered
+    assert "Notion create errors:" in rendered
+    assert "Notion update errors:" in rendered
+    assert "Duplicate stored Citation Keys:" in rendered
+    assert "Malformed stored rows:" in rendered
+    # No single opaque "Errors:" line summing every category together.
+    assert "Errors:" not in rendered

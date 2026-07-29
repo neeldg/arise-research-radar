@@ -208,7 +208,18 @@ def format_citation_notion_summary(results: Sequence[CitationUpsertResult]) -> s
 class CitationRunSummary(BaseModel):
     """One final, run-wide aggregate for scripts/run_citations.py — printed
     once, after tracked-paper reading, OpenAlex discovery, and the Notion
-    citations sync are all complete."""
+    citations sync are all complete.
+
+    Errors are tracked as separate, explained categories rather than one
+    opaque count — see format_citation_run_summary. `notion_read_errors` is
+    the bulk Citation Events read (see
+    sinks.notion_citations.load_citation_row_index); a nonzero value here
+    means the run stopped before reaching this summary at all (the index
+    can't be trusted enough to safely process any events), so in a summary
+    that actually printed this field is always 0 — it exists for reporting
+    consistency with the other categories, not because it can be nonzero
+    here.
+    """
 
     tracked_arise_papers: int
     skipped_no_openalex_id: int
@@ -218,7 +229,12 @@ class CitationRunSummary(BaseModel):
     proposed_new_citation_rows: int
     baseline_suppressed_rows: int
     new_slack_pending_rows: int
-    errors: int
+    openalex_batch_errors: int
+    notion_read_errors: int
+    notion_create_errors: int
+    notion_update_errors: int
+    duplicate_stored_citation_keys: int
+    malformed_stored_rows: int
 
 
 def format_citation_run_summary(summary: CitationRunSummary) -> str:
@@ -233,6 +249,12 @@ def format_citation_run_summary(summary: CitationRunSummary) -> str:
             f"  Proposed new citation rows:              {summary.proposed_new_citation_rows}",
             f"  Baseline-suppressed rows:                {summary.baseline_suppressed_rows}",
             f"  New Slack-pending rows:                  {summary.new_slack_pending_rows}",
-            f"  Errors:                                  {summary.errors}",
+            "  Errors (by category, never combined):",
+            f"    OpenAlex batch errors:                 {summary.openalex_batch_errors}",
+            f"    Notion citation-data-source read errors: {summary.notion_read_errors}",
+            f"    Notion create errors:                  {summary.notion_create_errors}",
+            f"    Notion update errors:                  {summary.notion_update_errors}",
+            f"    Duplicate stored Citation Keys:        {summary.duplicate_stored_citation_keys}",
+            f"    Malformed stored rows:                 {summary.malformed_stored_rows}",
         ]
     )

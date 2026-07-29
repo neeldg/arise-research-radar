@@ -6,6 +6,7 @@ separate Notion Citation Events data source.
     python scripts/run_citations.py --baseline
     python scripts/run_citations.py --baseline --write-notion
     python scripts/run_citations.py --since-days 30 --write-notion
+    python -u scripts/run_citations.py --baseline --error-report logs/errors.json | tee logs/run.log
 
 Reads tracked ARISE papers from the existing publications data source
 (NOTION_DATA_SOURCE_ID) — only rows with a valid OpenAlex work ID are used;
@@ -28,6 +29,28 @@ citation events are persisted — without it, results are previewed only.
   Slack Timestamp, Review Status, Citation Relationship, or Relationship
   Evidence — those are set once at creation and are otherwise human-owned or
   reserved for a later phase (see sinks/notion_citations.py).
+
+Citation-key matching is a single bulk read, not one Notion query per
+citation edge — see sinks/notion_citations.py's module docstring for why
+this replaced the original per-event `query_data_source_by_rich_text` call.
+A failed citation-data-source read is fatal (the run stops before touching
+any event): proceeding with an empty/partial index would risk creating
+duplicate rows for citation keys that already exist in Notion.
+
+Errors are reported as separate, named categories (OpenAlex batch errors,
+Notion citation-data-source read errors, Notion create errors, Notion update
+errors, duplicate stored Citation Keys, malformed stored rows) rather than
+one combined count — see arise_radar.output.format_citation_run_summary.
+Pass --error-report PATH to also write every individual error as structured
+JSON.
+
+Run with `python -u ... | tee logfile` (or set PYTHONUNBUFFERED=1) for a
+live, useful log: every stage message and progress line below is printed
+with flush=True, but Python still fully block-buffers stdout by default when
+it isn't a TTY (i.e. whenever piped or redirected) — `-u`/PYTHONUNBUFFERED
+disables that buffering at the interpreter level so a `tee`'d or redirected
+run shows output as it happens instead of only at exit (or never, if the
+process is interrupted before exit).
 """
 
 from __future__ import annotations
@@ -37,6 +60,8 @@ import json
 import sys
 from datetime import date, timedelta
 from pathlib import Path
+
+from pydantic import BaseModel
 
 from arise_radar.citations import (
     DEFAULT_CITATION_BATCH_SIZE,
@@ -52,10 +77,12 @@ from arise_radar.output import (
 )
 from arise_radar.sinks.notion import NotionClient, NotionError
 from arise_radar.sinks.notion_citations import (
+    CitationRowIndex,
     CitationUpsertResult,
     NotionConfigError,
     TrackedWorksResult,
     extract_tracked_works,
+    load_citation_row_index,
     load_notion_citations_config,
     upsert_citation_event,
 )
@@ -63,6 +90,12 @@ from arise_radar.sources.openalex import OpenAlexClient, OpenAlexError
 
 _EXISTING_ACTIONS = {"updated", "dry_run_update"}
 _NEW_ACTIONS = {"created", "dry_run_create"}
+
+# "Print progress every 100 or 250 citation edges" — 100 gives feedback
+# sooner on a long run without being noisy for the common (much smaller)
+# incremental run; the final "processed N/N" line always prints regardless
+# of this interval (see the processing loop in main()).
+PROGRESS_INTERVAL = 100
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -109,6 +142,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_CITATION_BATCH_SIZE,
         help=f"Tracked work IDs per OR-filter batch (default {DEFAULT_CITATION_BATCH_SIZE})",
     )
+    parser.add_argument(
+        "--error-report",
+        type=Path,
+        default=None,
+        help="Write every individual error (by category) to this path as structured JSON",
+    )
     return parser.parse_args(argv)
 
 
@@ -126,10 +165,13 @@ def _compute_citation_run_summary(
     skipped_count: int,
     discovery: CitationDiscoveryResult,
     results: list[CitationUpsertResult],
+    index: CitationRowIndex,
+    notion_read_errors: int = 0,
 ) -> CitationRunSummary:
     existing_rows = sum(1 for r in results if r.action in _EXISTING_ACTIONS)
     new_rows = sum(1 for r in results if r.action in _NEW_ACTIONS)
-    write_errors = sum(1 for r in results if r.action == "error")
+    create_errors = sum(1 for r in results if r.action == "error" and r.stage == "create")
+    update_errors = sum(1 for r in results if r.action == "error" and r.stage == "update")
     baseline_suppressed = sum(1 for e in discovery.events if e.slack_status == "Suppressed")
     slack_pending = sum(1 for e in discovery.events if e.slack_status == "Pending")
 
@@ -142,8 +184,86 @@ def _compute_citation_run_summary(
         proposed_new_citation_rows=new_rows,
         baseline_suppressed_rows=baseline_suppressed,
         new_slack_pending_rows=slack_pending,
-        errors=write_errors + len(discovery.batch_errors),
+        openalex_batch_errors=len(discovery.batch_errors),
+        notion_read_errors=notion_read_errors,
+        notion_create_errors=create_errors,
+        notion_update_errors=update_errors,
+        duplicate_stored_citation_keys=len(index.duplicate_keys),
+        malformed_stored_rows=index.malformed_rows,
     )
+
+
+class CitationErrorEntry(BaseModel):
+    """One row of the --error-report JSON. citation_key/citing_openalex_id/
+    cited_openalex_id are None for errors that aren't tied to a single
+    CitationEvent (an OpenAlex batch failure, the bulk Notion read, or the
+    aggregate malformed-row count)."""
+
+    citation_key: str | None = None
+    citing_openalex_id: str | None = None
+    cited_openalex_id: str | None = None
+    stage: str
+    status_code: int | None = None
+    error: str
+
+
+def _build_error_report_entries(
+    *,
+    discovery: CitationDiscoveryResult,
+    results: list[CitationUpsertResult],
+    index: CitationRowIndex,
+    notion_read_error: str | None,
+) -> list[CitationErrorEntry]:
+    """Pure assembly of every individual error into one flat, categorized
+    list — no I/O; main() writes it to --error-report. Every category from
+    the run summary is represented here at the individual-error level where
+    one exists."""
+    entries: list[CitationErrorEntry] = []
+
+    for batch_error in discovery.batch_errors:
+        entries.append(CitationErrorEntry(stage="openalex_batch", error=batch_error))
+
+    if notion_read_error:
+        entries.append(CitationErrorEntry(stage="notion_read", error=notion_read_error))
+
+    for event, result in zip(discovery.events, results, strict=True):
+        if result.action != "error":
+            continue
+        entries.append(
+            CitationErrorEntry(
+                citation_key=event.citation_key,
+                citing_openalex_id=event.citing_openalex_id,
+                cited_openalex_id=event.cited_openalex_id,
+                stage=f"notion_{result.stage}" if result.stage else "notion_unknown",
+                status_code=result.status_code,
+                error=result.detail,
+            )
+        )
+
+    for key, page_ids in index.duplicate_keys.items():
+        entries.append(
+            CitationErrorEntry(
+                citation_key=key,
+                stage="duplicate_key",
+                error=(
+                    f"{len(page_ids)} existing Notion pages share this citation key: "
+                    f"{', '.join(page_ids)}"
+                ),
+            )
+        )
+
+    if index.malformed_rows:
+        entries.append(
+            CitationErrorEntry(
+                stage="malformed_row",
+                error=(
+                    f"{index.malformed_rows} stored citation row(s) have no readable "
+                    "Citation Key and/or page id"
+                ),
+            )
+        )
+
+    return entries
 
 
 def main(
@@ -178,6 +298,7 @@ def main(
             fixture = json.loads(args.fixture_file.read_text())
             tracked_result = _tracked_works_result_from_fixture(fixture)
         else:
+            print("Stage: reading tracked publications...", flush=True)
             try:
                 pages = list(
                     active_notion.iter_data_source_pages(notion_config.publications_data_source_id)
@@ -208,6 +329,7 @@ def main(
                 is_baseline=args.baseline,
             )
         else:
+            print("Stage: retrieving OpenAlex citations...", flush=True)
             owns_openalex = openalex_client is None
             active_openalex = openalex_client or OpenAlexClient()
             try:
@@ -231,13 +353,42 @@ def main(
         print(f"Unique citation edges: {len(discovery.events)}")
         print()
 
-        dry_run = not args.write_notion
-        results = [
-            upsert_citation_event(
-                active_notion, notion_config.citations_data_source_id, event, dry_run=dry_run
+        print("Stage: loading existing citation rows...", flush=True)
+        notion_read_error: str | None = None
+        try:
+            citation_pages = list(
+                active_notion.iter_data_source_pages(notion_config.citations_data_source_id)
             )
-            for event in discovery.events
-        ]
+        except NotionError as exc:
+            notion_read_error = str(exc)
+            print(f"ERROR: could not read existing citation rows: {exc}", file=sys.stderr)
+            return 1
+        index = load_citation_row_index(citation_pages)
+
+        print(
+            f"Existing citation rows loaded: {index.total_rows_loaded} "
+            f"({len(index.key_to_page_id)} usable, {len(index.duplicate_keys)} duplicate "
+            f"key(s), {index.malformed_rows} malformed)"
+        )
+        print()
+
+        print(f"Stage: processing {len(discovery.events)} citation edge(s)...", flush=True)
+        dry_run = not args.write_notion
+        results: list[CitationUpsertResult] = []
+        total_events = len(discovery.events)
+        for i, event in enumerate(discovery.events, start=1):
+            results.append(
+                upsert_citation_event(
+                    active_notion,
+                    notion_config.citations_data_source_id,
+                    event,
+                    index,
+                    dry_run=dry_run,
+                )
+            )
+            if i % PROGRESS_INTERVAL == 0 or i == total_events:
+                print(f"  Processed {i}/{total_events} citation edge(s)...", flush=True)
+
         print(format_citation_notion_summary(results))
         print()
 
@@ -246,8 +397,22 @@ def main(
             skipped_count=tracked_result.skipped_no_openalex_id,
             discovery=discovery,
             results=results,
+            index=index,
         )
         print(format_citation_run_summary(summary))
+
+        if args.error_report is not None:
+            entries = _build_error_report_entries(
+                discovery=discovery,
+                results=results,
+                index=index,
+                notion_read_error=notion_read_error,
+            )
+            args.error_report.write_text(
+                json.dumps([entry.model_dump() for entry in entries], indent=2)
+            )
+            print()
+            print(f"Error report written: {args.error_report} ({len(entries)} entries)")
 
         return 0
     finally:

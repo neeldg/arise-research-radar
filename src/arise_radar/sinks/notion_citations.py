@@ -7,6 +7,18 @@ extract the tracked-paper list (see `extract_tracked_works`).
 Uses the same injectable `NotionClient` as sinks/notion.py (generic Notion
 HTTP client, not data-source-specific) so tests can mock it the same way via
 httpx.MockTransport.
+
+Citation-key matching is a single bulk read, not one query per event. An
+earlier version of upsert_citation_event called
+`query_data_source_by_rich_text` once per CitationEvent — with thousands of
+unique edges in a single run, that meant thousands of individual Notion
+requests (in dry-run mode too, since only the write, not the lookup, was
+gated by `dry_run`), and a chunk of them would fail once Notion's rate limit
+kicked in. `load_citation_row_index` now reads the whole Citation Events data
+source once via `NotionClient.iter_data_source_pages` (paginated, O(rows/100)
+requests) into an in-memory `citation_key -> page_id` mapping that
+`upsert_citation_event` consults and mutates in place — see that function's
+docstring for the full contract.
 """
 
 from __future__ import annotations
@@ -132,6 +144,72 @@ def extract_tracked_works(pages: Iterable[dict]) -> TrackedWorksResult:
     )
 
 
+# --- bulk citation-row index: one paginated read, not one query per event ---------
+
+
+class CitationRowIndex(BaseModel):
+    """In-memory index of the Citation Events data source, built once per run
+    by `load_citation_row_index` from a single paginated read
+    (`NotionClient.iter_data_source_pages`) instead of one
+    `query_data_source_by_rich_text` call per citation key.
+
+    Mutated in place by `upsert_citation_event` as new pages are created
+    within the same run: a citation key this run itself just created is
+    added to `key_to_page_id` immediately, so a later CitationEvent sharing
+    that key in the *same* run is matched against it instead of creating a
+    second row. On the *next* run, that same row is found by the initial
+    bulk load instead — so an interrupted run is safely restartable: rows
+    already written are never recreated.
+    """
+
+    key_to_page_id: dict[str, str] = Field(default_factory=dict)
+    # A Citation Key stored on more than one existing page — a pre-existing
+    # data-integrity problem, not something this pipeline resolves on its
+    # own. Kept out of key_to_page_id entirely; matching events are reported
+    # as skipped_duplicate (see upsert_citation_event) without ever being
+    # written to any of the ambiguous pages.
+    duplicate_keys: dict[str, list[str]] = Field(default_factory=dict)
+    total_rows_loaded: int = 0
+    # A stored row with no readable Citation Key and/or no page id. Excluded
+    # from the index (never guessed at), counted so it's visible instead of
+    # silently dropped.
+    malformed_rows: int = 0
+
+
+def load_citation_row_index(pages: Iterable[dict]) -> CitationRowIndex:
+    """Pure indexing over already-fetched Citation Events page dicts (see
+    `NotionClient.iter_data_source_pages`) — no I/O here; the paginated read
+    itself is the caller's responsibility (see scripts/run_citations.py),
+    matching the extract_tracked_works split above.
+    """
+    seen: dict[str, list[str]] = {}
+    total = 0
+    malformed = 0
+    for page in pages:
+        total += 1
+        citation_key = read_rich_text(page, NotionCitationProperties.CITATION_KEY)
+        page_id = page.get("id")
+        if not citation_key or not page_id:
+            malformed += 1
+            continue
+        seen.setdefault(citation_key, []).append(page_id)
+
+    key_to_page_id: dict[str, str] = {}
+    duplicate_keys: dict[str, list[str]] = {}
+    for key, page_ids in seen.items():
+        if len(page_ids) > 1:
+            duplicate_keys[key] = page_ids
+        else:
+            key_to_page_id[key] = page_ids[0]
+
+    return CitationRowIndex(
+        key_to_page_id=key_to_page_id,
+        duplicate_keys=duplicate_keys,
+        total_rows_loaded=total,
+        malformed_rows=malformed,
+    )
+
+
 # --- citation event upsert ----------------------------------------------------------
 
 
@@ -142,49 +220,53 @@ class CitationUpsertResult(BaseModel):
     ]
     page_id: str | None = None
     detail: str = ""
+    # Only set when action == "error" — which Notion write failed, and the
+    # HTTP status Notion returned (see NotionError.status_code), so callers
+    # can report create vs. update failures separately instead of one
+    # unexplained count (see scripts/run_citations.py's --error-report).
+    stage: Literal["create", "update"] | None = None
+    status_code: int | None = None
 
 
 def upsert_citation_event(
     client: NotionClient,
     data_source_id: str,
     event: CitationEvent,
+    index: CitationRowIndex,
     *,
     dry_run: bool = False,
 ) -> CitationUpsertResult:
-    """Create or update the Notion row for one citation event, matched by
-    Citation Key. Never raises for Notion API failures: those are captured
-    in the returned result's action="error" so callers can continue
-    processing the rest of a batch — same pattern as upsert_publication in
-    sinks/notion.py.
+    """Create or update the Notion row for one citation event, matched
+    against the in-memory `index` (see load_citation_row_index) — never a
+    per-event Notion query, in dry-run or live mode alike. Never raises for
+    Notion API failures: those are captured in the returned result's
+    action="error" so callers can continue processing the rest of a batch —
+    same pattern as upsert_publication in sinks/notion.py.
     """
-    try:
-        matches = client.query_data_source_by_rich_text(
-            data_source_id, NotionCitationProperties.CITATION_KEY, event.citation_key
-        )
-    except NotionError as exc:
-        return CitationUpsertResult(
-            citation_key=event.citation_key, action="error", detail=f"query failed: {exc}"
-        )
-
-    if len(matches) > 1:
-        page_ids = ", ".join(match.get("id", "?") for match in matches)
+    if event.citation_key in index.duplicate_keys:
+        page_ids = index.duplicate_keys[event.citation_key]
         return CitationUpsertResult(
             citation_key=event.citation_key,
             action="skipped_duplicate",
             detail=(
-                f"{len(matches)} existing Notion pages share this citation key "
-                f"({page_ids}); needs human repair"
+                f"{len(page_ids)} existing Notion pages share this citation key "
+                f"({', '.join(page_ids)}); needs human repair"
             ),
         )
 
-    if not matches:
-        return _create_citation(client, data_source_id, event, dry_run)
+    existing_page_id = index.key_to_page_id.get(event.citation_key)
+    if existing_page_id is None:
+        return _create_citation(client, data_source_id, event, index, dry_run)
 
-    return _update_citation(client, matches[0], event, dry_run)
+    return _update_citation(client, existing_page_id, event, dry_run)
 
 
 def _create_citation(
-    client: NotionClient, data_source_id: str, event: CitationEvent, dry_run: bool
+    client: NotionClient,
+    data_source_id: str,
+    event: CitationEvent,
+    index: CitationRowIndex,
+    dry_run: bool,
 ) -> CitationUpsertResult:
     if dry_run:
         return CitationUpsertResult(
@@ -202,17 +284,24 @@ def _create_citation(
         page = client.create_page(data_source_id, properties)
     except NotionError as exc:
         return CitationUpsertResult(
-            citation_key=event.citation_key, action="error", detail=f"create failed: {exc}"
+            citation_key=event.citation_key,
+            action="error",
+            stage="create",
+            status_code=exc.status_code,
+            detail=f"create failed: {exc}",
         )
-    return CitationUpsertResult(
-        citation_key=event.citation_key, action="created", page_id=page.get("id")
-    )
+    page_id = page.get("id")
+    if page_id:
+        # Same-run idempotency: a later event sharing this key (or a rerun
+        # of discover_citation_edges within the same process) finds this
+        # page via the index instead of creating a duplicate.
+        index.key_to_page_id[event.citation_key] = page_id
+    return CitationUpsertResult(citation_key=event.citation_key, action="created", page_id=page_id)
 
 
 def _update_citation(
-    client: NotionClient, existing_page: dict, event: CitationEvent, dry_run: bool
+    client: NotionClient, page_id: str, event: CitationEvent, dry_run: bool
 ) -> CitationUpsertResult:
-    page_id = existing_page.get("id")
     if dry_run:
         return CitationUpsertResult(
             citation_key=event.citation_key,
@@ -228,7 +317,11 @@ def _update_citation(
         client.update_page(page_id, properties)
     except NotionError as exc:
         return CitationUpsertResult(
-            citation_key=event.citation_key, action="error", detail=f"update failed: {exc}"
+            citation_key=event.citation_key,
+            action="error",
+            stage="update",
+            status_code=exc.status_code,
+            detail=f"update failed: {exc}",
         )
     return CitationUpsertResult(citation_key=event.citation_key, action="updated", page_id=page_id)
 

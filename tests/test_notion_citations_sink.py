@@ -8,7 +8,9 @@ import pytest
 from arise_radar.citations import CitationEvent
 from arise_radar.sinks.notion import NotionClient, NotionConfigError
 from arise_radar.sinks.notion_citations import (
+    CitationRowIndex,
     extract_tracked_works,
+    load_citation_row_index,
     load_notion_citations_config,
     upsert_citation_event,
 )
@@ -117,18 +119,71 @@ def test_extract_tracked_works_empty_input() -> None:
     assert result.tracked == []
 
 
-# --- upsert_citation_event: create ---------------------------------------------------
+# --- load_citation_row_index: pure indexing over already-fetched pages -------------
 
 
-def test_new_citation_event_creates_page(mock_notion_client: Callable[..., NotionClient]) -> None:
+def _citation_page(citation_key: str | None, page_id: str | None = "page-1") -> dict:
+    props: dict = {}
+    if citation_key is not None:
+        props["Citation Key"] = {"type": "rich_text", "rich_text": [{"plain_text": citation_key}]}
+    page: dict = {"properties": props}
+    if page_id is not None:
+        page["id"] = page_id
+    return page
+
+
+def test_load_citation_row_index_empty_input() -> None:
+    index = load_citation_row_index([])
+    assert index.key_to_page_id == {}
+    assert index.duplicate_keys == {}
+    assert index.total_rows_loaded == 0
+    assert index.malformed_rows == 0
+
+
+def test_load_citation_row_index_single_unique_key() -> None:
+    index = load_citation_row_index([_citation_page("citation:W900:W100", "page-1")])
+    assert index.key_to_page_id == {"citation:W900:W100": "page-1"}
+    assert index.duplicate_keys == {}
+    assert index.total_rows_loaded == 1
+    assert index.malformed_rows == 0
+
+
+def test_load_citation_row_index_flags_duplicate_key_and_excludes_it_from_lookup_map() -> None:
+    pages = [
+        _citation_page("citation:W900:W100", "page-a"),
+        _citation_page("citation:W900:W100", "page-b"),
+    ]
+    index = load_citation_row_index(pages)
+
+    assert index.key_to_page_id == {}  # ambiguous key never usable for direct lookup
+    assert index.duplicate_keys == {"citation:W900:W100": ["page-a", "page-b"]}
+    assert index.total_rows_loaded == 2
+    assert index.malformed_rows == 0
+
+
+def test_load_citation_row_index_counts_malformed_rows_without_guessing() -> None:
+    pages = [
+        _citation_page(None, "page-1"),  # no Citation Key
+        _citation_page("citation:W900:W100", None),  # no page id
+        _citation_page("citation:W901:W100", "page-2"),  # fine
+    ]
+    index = load_citation_row_index(pages)
+
+    assert index.malformed_rows == 2
+    assert index.total_rows_loaded == 3
+    assert index.key_to_page_id == {"citation:W901:W100": "page-2"}
+    assert index.duplicate_keys == {}
+
+
+# --- upsert_citation_event: create, matched against the in-memory index only ------
+
+
+def test_new_citation_event_creates_page_with_no_pre_create_lookup(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
     created_body: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if (
-            request.method == "POST"
-            and request.url.path == f"/v1/data_sources/{DATA_SOURCE_ID}/query"
-        ):
-            return httpx.Response(200, json={"results": []})
         if request.method == "POST" and request.url.path == "/v1/pages":
             nonlocal created_body
             created_body = json.loads(request.content)
@@ -137,8 +192,9 @@ def test_new_citation_event_creates_page(mock_notion_client: Callable[..., Notio
 
     client = mock_notion_client(handler)
     event = _event()
+    index = CitationRowIndex()
 
-    result = upsert_citation_event(client, DATA_SOURCE_ID, event)
+    result = upsert_citation_event(client, DATA_SOURCE_ID, event, index)
 
     assert result.action == "created"
     assert result.page_id == "citation-page-1"
@@ -167,11 +223,6 @@ def test_baseline_citation_event_creates_with_suppressed_status(
     created_body: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if (
-            request.method == "POST"
-            and request.url.path == f"/v1/data_sources/{DATA_SOURCE_ID}/query"
-        ):
-            return httpx.Response(200, json={"results": []})
         if request.method == "POST" and request.url.path == "/v1/pages":
             nonlocal created_body
             created_body = json.loads(request.content)
@@ -181,7 +232,7 @@ def test_baseline_citation_event_creates_with_suppressed_status(
     client = mock_notion_client(handler)
     event = _event(is_baseline=True, slack_status="Suppressed")
 
-    result = upsert_citation_event(client, DATA_SOURCE_ID, event)
+    result = upsert_citation_event(client, DATA_SOURCE_ID, event, CitationRowIndex())
 
     assert result.action == "created"
     props = created_body["properties"]
@@ -189,40 +240,48 @@ def test_baseline_citation_event_creates_with_suppressed_status(
     assert props["Slack Status"] == {"select": {"name": "Suppressed"}}
 
 
-# --- upsert_citation_event: update, preserving human-edited fields ----------------
-
-
-def _existing_citation_page(page_id: str = "citation-page-1") -> dict:
-    return {
-        "id": page_id,
-        "properties": {
-            "Citation Key": {
-                "type": "rich_text",
-                "rich_text": [{"plain_text": "citation:W900:W100"}],
-            },
-            "Review Status": {"type": "select", "select": {"name": "Approved"}},
-            "Baseline": {"type": "checkbox", "checkbox": True},
-            "Slack Status": {"type": "select", "select": {"name": "Sent"}},
-            "Citation Relationship": {"type": "select", "select": {"name": "Extends"}},
-        },
-    }
-
-
-def test_existing_citation_key_updates_page_not_creates(
+def test_successful_create_adds_key_to_index_so_a_later_event_updates_not_creates(
     mock_notion_client: Callable[..., NotionClient],
 ) -> None:
+    create_calls = {"count": 0}
+
     def handler(request: httpx.Request) -> httpx.Response:
-        if (
-            request.method == "POST"
-            and request.url.path == f"/v1/data_sources/{DATA_SOURCE_ID}/query"
-        ):
-            return httpx.Response(200, json={"results": [_existing_citation_page()]})
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            create_calls["count"] += 1
+            return httpx.Response(200, json={"id": "citation-page-1"})
         if request.method == "PATCH" and request.url.path == "/v1/pages/citation-page-1":
             return httpx.Response(200, json={"id": "citation-page-1"})
         raise AssertionError(f"unexpected request {request.method} {request.url}")
 
     client = mock_notion_client(handler)
-    result = upsert_citation_event(client, DATA_SOURCE_ID, _event())
+    index = CitationRowIndex()
+    event = _event()
+
+    first = upsert_citation_event(client, DATA_SOURCE_ID, event, index)
+    second = upsert_citation_event(client, DATA_SOURCE_ID, event, index)
+
+    assert first.action == "created"
+    assert second.action == "updated"
+    assert second.page_id == "citation-page-1"
+    assert create_calls["count"] == 1  # only one row was ever created for the repeated event
+    assert index.key_to_page_id[event.citation_key] == "citation-page-1"
+
+
+# --- upsert_citation_event: update, using the known page id directly --------------
+
+
+def test_existing_citation_key_updates_using_known_page_id_no_query(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "PATCH" and request.url.path == "/v1/pages/citation-page-1":
+            return httpx.Response(200, json={"id": "citation-page-1"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    client = mock_notion_client(handler)
+    index = CitationRowIndex(key_to_page_id={"citation:W900:W100": "citation-page-1"})
+
+    result = upsert_citation_event(client, DATA_SOURCE_ID, _event(), index)
 
     assert result.action == "updated"
     assert result.page_id == "citation-page-1"
@@ -238,11 +297,6 @@ def test_update_never_touches_baseline_review_status_or_slack_fields(
     updated_body: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if (
-            request.method == "POST"
-            and request.url.path == f"/v1/data_sources/{DATA_SOURCE_ID}/query"
-        ):
-            return httpx.Response(200, json={"results": [_existing_citation_page()]})
         if request.method == "PATCH" and request.url.path == "/v1/pages/citation-page-1":
             nonlocal updated_body
             updated_body = json.loads(request.content)
@@ -250,10 +304,11 @@ def test_update_never_touches_baseline_review_status_or_slack_fields(
         raise AssertionError(f"unexpected request {request.method} {request.url}")
 
     client = mock_notion_client(handler)
+    index = CitationRowIndex(key_to_page_id={"citation:W900:W100": "citation-page-1"})
     # Even a baseline=True incoming event must not overwrite the existing
     # (already-reviewed, already-non-baseline-in-spirit) row's fields.
     upsert_citation_event(
-        client, DATA_SOURCE_ID, _event(is_baseline=True, slack_status="Suppressed")
+        client, DATA_SOURCE_ID, _event(is_baseline=True, slack_status="Suppressed"), index
     )
 
     props = updated_body["properties"]
@@ -273,86 +328,84 @@ def test_update_never_touches_baseline_review_status_or_slack_fields(
 # --- exclusion / duplicate / failure handling ---------------------------------------
 
 
-def test_multiple_pages_same_citation_key_is_flagged_and_not_written(
+def test_duplicate_stored_key_is_skipped_without_any_notion_call(
     mock_notion_client: Callable[..., NotionClient],
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if (
-            request.method == "POST"
-            and request.url.path == f"/v1/data_sources/{DATA_SOURCE_ID}/query"
-        ):
-            return httpx.Response(
-                200,
-                json={
-                    "results": [
-                        _existing_citation_page("page-a"),
-                        _existing_citation_page("page-b"),
-                    ]
-                },
-            )
-        raise AssertionError("must not create or update when the citation key is ambiguous")
+        raise AssertionError("must not create, update, or query when the citation key is ambiguous")
 
     client = mock_notion_client(handler)
-    result = upsert_citation_event(client, DATA_SOURCE_ID, _event())
+    index = CitationRowIndex(duplicate_keys={"citation:W900:W100": ["page-a", "page-b"]})
+
+    result = upsert_citation_event(client, DATA_SOURCE_ID, _event(), index)
 
     assert result.action == "skipped_duplicate"
     assert "page-a" in result.detail
     assert "page-b" in result.detail
 
 
-def test_notion_failure_is_captured_as_error_not_raised(
+def test_create_failure_is_captured_as_error_with_stage_and_status_code(
     mock_notion_client: Callable[..., NotionClient],
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if (
-            request.method == "POST"
-            and request.url.path == f"/v1/data_sources/{DATA_SOURCE_ID}/query"
-        ):
-            return httpx.Response(200, json={"results": []})
         if request.method == "POST" and request.url.path == "/v1/pages":
             return httpx.Response(500, json={"message": "internal error"})
         raise AssertionError(f"unexpected request {request.method} {request.url}")
 
     client = mock_notion_client(handler, max_retries=0)
-    result = upsert_citation_event(client, DATA_SOURCE_ID, _event())
+    result = upsert_citation_event(client, DATA_SOURCE_ID, _event(), CitationRowIndex())
 
     assert result.action == "error"
+    assert result.stage == "create"
+    assert result.status_code == 500
     assert "create failed" in result.detail
 
 
-# --- dry run -------------------------------------------------------------------------
-
-
-def test_dry_run_create_makes_no_write_request(
+def test_update_failure_is_captured_as_error_with_stage_and_status_code(
     mock_notion_client: Callable[..., NotionClient],
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if (
-            request.method == "POST"
-            and request.url.path == f"/v1/data_sources/{DATA_SOURCE_ID}/query"
-        ):
-            return httpx.Response(200, json={"results": []})
-        raise AssertionError("dry run must not perform create/update requests")
+        if request.method == "PATCH" and request.url.path == "/v1/pages/citation-page-1":
+            return httpx.Response(503, json={"message": "unavailable"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    client = mock_notion_client(handler, max_retries=0)
+    index = CitationRowIndex(key_to_page_id={"citation:W900:W100": "citation-page-1"})
+    result = upsert_citation_event(client, DATA_SOURCE_ID, _event(), index)
+
+    assert result.action == "error"
+    assert result.stage == "update"
+    assert result.status_code == 503
+    assert "update failed" in result.detail
+
+
+# --- dry run: zero Notion calls at all, not just zero writes -----------------------
+
+
+def test_dry_run_create_makes_no_notion_call(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("dry run must not perform any Notion request")
 
     client = mock_notion_client(handler)
-    result = upsert_citation_event(client, DATA_SOURCE_ID, _event(), dry_run=True)
+    result = upsert_citation_event(
+        client, DATA_SOURCE_ID, _event(), CitationRowIndex(), dry_run=True
+    )
 
     assert result.action == "dry_run_create"
 
 
-def test_dry_run_update_makes_no_write_request(
+def test_dry_run_update_makes_no_notion_call(
     mock_notion_client: Callable[..., NotionClient],
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if (
-            request.method == "POST"
-            and request.url.path == f"/v1/data_sources/{DATA_SOURCE_ID}/query"
-        ):
-            return httpx.Response(200, json={"results": [_existing_citation_page()]})
-        raise AssertionError("dry run must not perform create/update requests")
+        raise AssertionError("dry run must not perform any Notion request")
 
     client = mock_notion_client(handler)
-    result = upsert_citation_event(client, DATA_SOURCE_ID, _event(), dry_run=True)
+    index = CitationRowIndex(key_to_page_id={"citation:W900:W100": "citation-page-1"})
+
+    result = upsert_citation_event(client, DATA_SOURCE_ID, _event(), index, dry_run=True)
 
     assert result.action == "dry_run_update"
     assert result.page_id == "citation-page-1"
