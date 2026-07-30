@@ -1,14 +1,16 @@
 name: Research Radar
 
 # Scheduled + manually-triggerable run of the ARISE Research Radar pipeline:
-# OpenAlex roster discovery -> Notion upsert -> draft generation -> incremental
-# citation discovery -> Notion upsert -> citation Slack notifications. Never
-# publishes anything to social platforms -- every generated item lands in
-# Notion for human review (see CLAUDE.md). The only outbound message this
-# workflow ever sends is the citation Slack notification itself, and only for
-# incrementally-discovered, non-baseline citation events (see the citation
-# steps below). Lint and tests must pass before any live pipeline step runs,
-# so a broken change never reaches Notion, Anthropic, or Slack.
+# OpenAlex roster discovery -> Notion upsert -> draft generation -> publication
+# Slack notifications -> incremental citation discovery -> Notion upsert ->
+# citation Slack notifications. Never publishes anything to social platforms
+# -- every generated item lands in Notion for human review (see CLAUDE.md).
+# The only outbound messages this workflow ever sends are the publication and
+# citation Slack notifications, and only for genuinely new, non-historical
+# rows (Slack Status=Pending -- see the notification steps below; historical
+# rows are Suppressed and never post). Lint and tests must pass before any
+# live pipeline step runs, so a broken change never reaches Notion,
+# Anthropic, or Slack.
 
 on:
   workflow_dispatch:
@@ -81,9 +83,34 @@ jobs:
             --write-notion
 
       # --error-report writes into logs/, which is gitignored/untracked and
-      # does not exist in a fresh checkout.
+      # does not exist in a fresh checkout. Shared by the publication and
+      # citation Slack-notification steps below.
       - name: Create logs directory
         run: mkdir -p logs
+
+      # Only rows the roster-sync/draft steps above just left Slack
+      # Status=Pending are ever posted (see
+      # arise_radar.notifications.publications.scan_publication_rows):
+      # historical Suppressed rows (and rows with no Slack Status yet, i.e.
+      # not backfilled) and already-Sent rows are never candidates, and
+      # --retry-failed is deliberately omitted so a transient failure needs
+      # a deliberate manual rerun, not a silent automatic repost. Runs only
+      # if publication discovery/drafting above succeeded (GitHub Actions'
+      # default step behavior) -- a catastrophic failure there must not
+      # reach Slack at all; a completed run with per-row errors still exits
+      # 0 and this step still runs, matching send_publication_notifications.py's
+      # distinction between fatal and record-level failures. NOTION_TOKEN and
+      # NOTION_DATA_SOURCE_ID already come from the job-level env above; only
+      # the two Slack secrets are added at step level -- no ANTHROPIC_*, no
+      # NOTION_CITATIONS_DATA_SOURCE_ID, no SLACK_SIGNALS_CHANNEL_ID.
+      - name: Send publication Slack notifications
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_PAPERS_CHANNEL_ID: ${{ secrets.SLACK_PAPERS_CHANNEL_ID }}
+        run: |
+          python -u scripts/send_publication_notifications.py \
+            --send \
+            --error-report logs/publication_slack_errors.json
 
       # 30-day lookback intentionally overlaps every previous run; the
       # Citation Key upsert (src/arise_radar/sinks/notion_citations.py) makes
@@ -129,17 +156,18 @@ jobs:
             --send \
             --error-report logs/citation_slack_errors.json
 
-      # always(): both error-report files should be inspectable even when a
-      # step above failed (record-level errors) or was skipped (a
+      # always(): all three error-report files should be inspectable even
+      # when a step above failed (record-level errors) or was skipped (a
       # catastrophic upstream failure, in which case a file may legitimately
       # be missing -- if-no-files-found: warn surfaces that without failing
       # the run over a report that was never expected to exist).
-      - name: Upload citation error reports
+      - name: Upload notification error reports
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: citation-error-reports
+          name: notification-error-reports
           path: |
+            logs/publication_slack_errors.json
             logs/citation_incremental_errors.json
             logs/citation_slack_errors.json
           if-no-files-found: warn

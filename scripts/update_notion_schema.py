@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""Safe, idempotent Notion schema migration for the summarization/draft milestone.
+"""Safe, idempotent Notion schema migration for the publications data source.
 
-Adds the paper-summarization and ARISE-style draft-generation properties to the
-existing NOTION_DATA_SOURCE_ID data source if they don't already exist.
+Adds the paper-summarization/ARISE-style draft-generation properties, and the
+new-publication Slack notification properties (Slack Status, Slack Timestamp,
+Slack Error, Slack Notified Date — see
+arise_radar.notifications.publications), to the existing NOTION_DATA_SOURCE_ID
+data source if they don't already exist. One shared, general-purpose
+migration framework for both — not two competing ones.
 
     python scripts/update_notion_schema.py --dry-run
     python scripts/update_notion_schema.py
 
-Never touches an existing property. If an existing property's type conflicts
-with what this migration would add, that property is skipped and reported —
-never overwritten. Running this twice does nothing the second time.
+Never touches an existing property or removes a select option. If an existing
+property's type conflicts with what this migration would add, that property
+is skipped and reported — never overwritten; fix it manually in the Notion UI
+and rerun. Running this twice does nothing the second time.
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ from arise_radar.sinks.notion import (
 
 DRAFT_STATUS_OPTIONS = ["Not Started", "Drafted", "Needs Attention", "Approved"]
 DRAFT_SOURCE_BASIS_OPTIONS = ["OpenAlex Abstract", "PubMed Abstract", "Metadata Only"]
+SLACK_STATUS_OPTIONS = ["Pending", "Suppressed", "Sent", "Failed"]
 
 
 def _select_options(names: list[str]) -> list[dict]:
@@ -50,6 +56,12 @@ def desired_properties() -> dict:
             "select": {"options": _select_options(DRAFT_SOURCE_BASIS_OPTIONS)}
         },
         NotionProperties.DRAFT_MODEL: {"rich_text": {}},
+        NotionProperties.SLACK_STATUS: {
+            "select": {"options": _select_options(SLACK_STATUS_OPTIONS)}
+        },
+        NotionProperties.SLACK_TIMESTAMP: {"rich_text": {}},
+        NotionProperties.SLACK_ERROR: {"rich_text": {}},
+        NotionProperties.SLACK_NOTIFIED_DATE: {"date": {}},
     }
 
 
@@ -93,8 +105,9 @@ def plan_migration(existing_properties: dict, desired: dict) -> SchemaMigrationP
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Add paper-summarization/draft-generation properties to the Notion "
-            "data source, without touching anything that already exists."
+            "Add paper-summarization/draft-generation and Slack-notification "
+            "properties to the Notion data source, without touching anything "
+            "that already exists."
         )
     )
     parser.add_argument(

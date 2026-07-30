@@ -7,6 +7,7 @@ import pytest
 from scripts.update_notion_schema import (
     DRAFT_SOURCE_BASIS_OPTIONS,
     DRAFT_STATUS_OPTIONS,
+    SLACK_STATUS_OPTIONS,
     desired_properties,
     main,
     plan_migration,
@@ -78,6 +79,16 @@ def test_desired_properties_have_expected_select_options() -> None:
     assert status_options == set(DRAFT_STATUS_OPTIONS)
     basis_options = {opt["name"] for opt in desired["Draft Source Basis"]["select"]["options"]}
     assert basis_options == set(DRAFT_SOURCE_BASIS_OPTIONS)
+    slack_status_options = {opt["name"] for opt in desired["Slack Status"]["select"]["options"]}
+    assert slack_status_options == set(SLACK_STATUS_OPTIONS)
+
+
+def test_desired_properties_include_all_four_slack_notification_properties() -> None:
+    desired = desired_properties()
+    assert desired["Slack Status"]["select"]["options"]
+    assert desired["Slack Timestamp"] == {"rich_text": {}}
+    assert desired["Slack Error"] == {"rich_text": {}}
+    assert desired["Slack Notified Date"] == {"date": {}}
 
 
 # --- CLI: dry run -------------------------------------------------------------
@@ -101,7 +112,7 @@ def test_dry_run_makes_no_write_request(
     captured = capsys.readouterr()
 
     assert exit_code == 0
-    assert "Would add 9 properties" in captured.out
+    assert "Would add 13 properties" in captured.out
     assert "Internal Summary" in captured.out
     assert "Dry run: no write requests were made." in captured.out
     assert "secret-token-value" not in captured.out
@@ -133,7 +144,7 @@ def test_real_run_adds_only_missing_properties_preserving_existing(
     captured = capsys.readouterr()
 
     assert exit_code == 0
-    assert "Added 9 properties." in captured.out
+    assert "Added 13 properties." in captured.out
     assert "secret-token-value" not in captured.out
 
     sent_properties = sent_body["properties"]
@@ -173,7 +184,7 @@ def test_real_run_refuses_conflicting_property_and_still_adds_the_rest(
     assert exit_code == 0
     assert "REFUSING 1 conflicting property" in captured.out
     assert "Draft Status" in captured.out
-    assert "Added 8 properties." in captured.out
+    assert "Added 12 properties." in captured.out
     assert "Draft Status" not in sent_body["properties"]
 
 

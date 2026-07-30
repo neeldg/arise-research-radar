@@ -545,6 +545,108 @@ Do not evaluate only on items that ARISE ultimately posts.
     Actions YAML structure — adding one now would be exactly the kind of
     formatting-brittle test the project avoids elsewhere.
 
+## Completed milestones (continued, 7)
+
+* **New-publication Slack delivery** (`scripts/send_publication_notifications.py`,
+  `src/arise_radar/notifications/publications.py`), plus the schema/backfill
+  work that makes it safe to turn on without spamming the papers Slack
+  channel with the existing publication backlog. Mirrors the citation Slack
+  pipeline's design exactly (bulk read, in-memory selection, update by known
+  page ID, dry-run-by-default) — see "Completed milestones (continued, 5)".
+  * **Schema**: four new publications-data-source properties (`Slack
+    Status` select — `Pending`/`Suppressed`/`Sent`/`Failed`; `Slack
+    Timestamp` and `Slack Error` rich_text; `Slack Notified Date` date)
+    added to `scripts/update_notion_schema.py`'s existing
+    `desired_properties()` — the same additive, idempotent,
+    type-conflict-refusing migration framework already used for the
+    draft-generation properties, not a second competing one.
+  * **Historical backfill** (`scripts/backfill_publication_slack_status.py`):
+    a one-time, safely-rerunnable command that sets `Slack Status =
+    Suppressed` on every row that doesn't have a Slack Status yet — and
+    only those; a row with any existing value (including a value from a
+    previous backfill run) is left completely untouched, which is what
+    makes rerunning it a no-op. Bulk-reads the data source once; dry-run by
+    default, `--write-notion` required to apply.
+  * **Create-time policy** (`sinks/notion.py`'s `upsert_publication`): a
+    genuinely new publication row now gets `Slack Status = Pending` at
+    creation — *unless* it's non-standard (see `work_types.py`) or a
+    probable version/preprint duplicate (see `version_family.py`), in which
+    case it gets `Suppressed` instead. This reuses the exact same
+    `hold_reasons` eligibility computation that already decides whether a
+    new row defaults to `Draft Status = Needs Attention` — one policy, two
+    consequences, not a second parallel eligibility rule. An existing row's
+    resync (metadata, drafts, relevance, researcher names) never mentions
+    `Slack Status` in its write payload, so it's always preserved exactly
+    as-is — this is also what keeps a historical row from ever becoming
+    `Pending` merely because roster sync touches it again before the
+    backfill has run.
+  * **Notifier** (`notifications/publications.py`): candidates are
+    `Slack Status = Pending` (plus `Failed` with `--retry-failed`) rows
+    only — `Suppressed`, empty/not-yet-backfilled, and `Sent` rows are
+    never selected, and a Canonical Key shared by more than one stored page
+    skips every copy and is reported, never guessed at. On success: `Slack
+    Status = Sent`, `Slack Timestamp` set from Slack's returned `ts`, `Slack
+    Notified Date` set to the current UTC date/time, `Slack Error` cleared
+    — only if Slack returned `ok: true` *and* a timestamp. On failure:
+    `Slack Status = Failed` and a concise, token-safe error saved into
+    `Slack Error` (overwritten, not appended — unlike the citation
+    pipeline's System Notes, there's a dedicated field for this). The rare
+    case where Slack accepts the message but the follow-up Notion write
+    itself fails is its own category (`notion_update_after_send`) with
+    `Slack Status` deliberately left unchanged, same reasoning as the
+    citation notifier. Message rendering: title, researchers, `Published
+    in` (falls back to the `Source` property, e.g. "OpenAlex" — this data
+    source has no dedicated Venue property and none was added), published
+    date, and a `Why It Matters` → `Internal Summary` → safe-fallback chain
+    are always shown; `Key Story Angle` and a Draft Social Post preview
+    (only when present *and* ≤280 characters) are shown when available.
+    Complete plain-text fallback plus Slack blocks, matching the citation
+    notifier's pattern.
+  * `--error-report PATH` writes every delivery failure and duplicate-key
+    conflict as structured JSON (`canonical_key`, `notion_page_id`,
+    `stage`, `slack_error_code`, `status_code`, `error`).
+  * The citation Slack pipeline (`notifications/citations.py`,
+    `sinks/notion_citations.py`, `scripts/run_citations.py`,
+    `scripts/send_citation_notifications.py`) was not touched by this
+    milestone. GitHub Actions wiring followed later — see "Completed
+    milestones (continued, 8)".
+
+## Completed milestones (continued, 8)
+
+* **New-publication Slack delivery wired into the daily GitHub Actions
+  workflow** (`.github/workflows/research-radar.yml`). Extends the same
+  `research-radar` workflow that already runs citation discovery/Slack
+  delivery (see "Completed milestones (continued, 6)") — no second
+  scheduled workflow. One new step, inserted between drafting and citation
+  discovery: `send_publication_notifications.py --send --error-report
+  logs/publication_slack_errors.json`, no `--retry-failed` (a transient
+  failure needs a deliberate manual rerun, not a silent automatic repost —
+  same convention as the citation-delivery step).
+  * Final step order: roster/publication discovery → publication drafting →
+    **publication Slack delivery** → incremental citation discovery →
+    citation Slack delivery → upload error-report artifacts.
+  * No new `mkdir -p logs` step needed — the existing "Create logs
+    directory" step (already positioned right after drafting, originally
+    added for the citation steps) now also covers the publication step's
+    `--error-report` output; its comment was updated to say so.
+  * Secrets stay scoped per step: `NOTION_TOKEN`/`NOTION_DATA_SOURCE_ID`
+    already come from the existing job-level `env`, so only
+    `SLACK_BOT_TOKEN` and `SLACK_PAPERS_CHANNEL_ID` are added at step
+    level — no `ANTHROPIC_*`, no `NOTION_CITATIONS_DATA_SOURCE_ID`, no
+    `SLACK_SIGNALS_CHANNEL_ID`.
+  * No explicit `if:` on the new step — GitHub Actions' default "only run
+    if the previous step succeeded" is what keeps it from running after a
+    catastrophic publication-discovery/drafting failure, the same reasoning
+    already established for the citation-delivery step: a fatal failure
+    exits nonzero and skips it, while a completed run with per-row errors
+    still exits 0 (those errors land in the JSON report instead).
+  * The artifact-upload step was extended (still `if: always()`) to include
+    `logs/publication_slack_errors.json` alongside the two citation report
+    files, and renamed from `citation-error-reports` to
+    `notification-error-reports` since it's no longer citation-only.
+  * No changes to `on:` (`workflow_dispatch` + daily `schedule`), the
+    `research-radar` concurrency group, or any existing step's command.
+
 ## Current milestone
 
 Paper summarization and ARISE-style LinkedIn draft generation

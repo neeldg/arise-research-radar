@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""CLI: post pending new ARISE publications to the Slack papers channel and
+record the delivery result back onto the publication Notion row.
+
+    python scripts/send_publication_notifications.py
+    python scripts/send_publication_notifications.py --send
+    python scripts/send_publication_notifications.py --send --retry-failed
+    python scripts/send_publication_notifications.py --send --canonical-key doi:10.1000/abc
+    python scripts/send_publication_notifications.py --send --error-report logs/pub_errors.json
+
+Requires NOTION_TOKEN, NOTION_DATA_SOURCE_ID, SLACK_BOT_TOKEN, and
+SLACK_PAPERS_CHANNEL_ID (see .env.example). Never reads the Citation Events
+data source and never posts to the signals channel — see
+scripts/send_citation_notifications.py for that separate pipeline, which
+this script never touches.
+
+Candidate selection (see arise_radar.notifications.publications.scan_publication_rows):
+a row is only ever a candidate when Slack Status is Pending (or, with
+--retry-failed, also Failed). Suppressed rows, rows with no Slack Status yet
+(historical, pre-backfill), and Sent rows are never candidates, regardless
+of flags. A Canonical Key shared by more than one stored row is treated as a
+data-integrity problem: every copy is skipped and reported, never posted.
+
+Run scripts/update_notion_schema.py and
+scripts/backfill_publication_slack_status.py first if Slack Status doesn't
+exist on the data source yet, or historical rows haven't been backfilled to
+Suppressed — otherwise this script has nothing to safely select from.
+
+Safe default: without --send, this is a dry run — it reads Notion and
+prints exactly what it would post (rendered message previews), but makes no
+Slack calls and no Notion writes. --send is required for live delivery.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from pydantic import BaseModel
+
+from arise_radar.notifications.publications import (
+    PublicationDeliveryResult,
+    PublicationNotificationConfigError,
+    PublicationScanResult,
+    deliver_publication_notification,
+    load_publication_notification_config,
+    scan_publication_rows,
+    select_candidates,
+)
+from arise_radar.sinks.notion import NotionClient, NotionError
+from arise_radar.sinks.slack import SlackClient
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Post pending new ARISE publications to Slack and record the delivery "
+            "result on the publication Notion row."
+        )
+    )
+    parser.add_argument(
+        "--send",
+        action="store_true",
+        help="Actually post to Slack and write to Notion; default is dry-run preview only",
+    )
+    parser.add_argument(
+        "--limit", type=int, default=None, help="Cap the number of candidates processed"
+    )
+    parser.add_argument(
+        "--canonical-key", type=str, default=None, help="Only process this one Canonical Key"
+    )
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="Also process rows with Slack Status = Failed (in addition to Pending)",
+    )
+    parser.add_argument(
+        "--error-report",
+        type=Path,
+        default=None,
+        help="Write every delivery/duplicate-key problem to this path as structured JSON",
+    )
+    return parser.parse_args(argv)
+
+
+class PublicationNotificationErrorEntry(BaseModel):
+    canonical_key: str | None = None
+    notion_page_id: str | None = None
+    stage: str
+    slack_error_code: str | None = None
+    status_code: int | None = None
+    error: str
+
+
+def _build_error_report_entries(
+    scan: PublicationScanResult, results: list[PublicationDeliveryResult]
+) -> list[PublicationNotificationErrorEntry]:
+    """Pure assembly of every individual problem into one flat, categorized
+    list — no I/O; main() writes it to --error-report."""
+    entries: list[PublicationNotificationErrorEntry] = []
+
+    for result in results:
+        if result.action != "failed":
+            continue
+        entries.append(
+            PublicationNotificationErrorEntry(
+                canonical_key=result.canonical_key,
+                notion_page_id=result.page_id,
+                stage=result.stage or "unknown",
+                slack_error_code=result.slack_error_code,
+                status_code=result.status_code,
+                error=result.detail,
+            )
+        )
+
+    for key, page_ids in scan.duplicate_keys.items():
+        entries.append(
+            PublicationNotificationErrorEntry(
+                canonical_key=key,
+                stage="duplicate_key",
+                error=(
+                    f"{len(page_ids)} existing Notion pages share this canonical key: "
+                    f"{', '.join(page_ids)}"
+                ),
+            )
+        )
+
+    return entries
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    notion_client: NotionClient | None = None,
+    slack_client: SlackClient | None = None,
+) -> int:
+    args = parse_args(argv)
+
+    try:
+        config = load_publication_notification_config()
+    except PublicationNotificationConfigError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    owns_notion = notion_client is None
+    active_notion = notion_client or NotionClient(token=config.notion_token.get_secret_value())
+    owns_slack = slack_client is None
+    active_slack = slack_client or SlackClient(token=config.slack_bot_token.get_secret_value())
+
+    try:
+        print("Stage: reading publication rows...", flush=True)
+        try:
+            pages = list(active_notion.iter_data_source_pages(config.data_source_id))
+        except NotionError as exc:
+            print(f"ERROR: could not read publication rows: {exc}", file=sys.stderr)
+            return 1
+
+        scan = scan_publication_rows(pages)
+        candidates = select_candidates(
+            scan,
+            retry_failed=args.retry_failed,
+            canonical_key=args.canonical_key,
+            limit=args.limit,
+        )
+
+        print(f"Rows scanned: {scan.rows_scanned}")
+        print(f"Pending candidates: {len(scan.pending)}")
+        print(
+            "Failed rows selected for retry: "
+            f"{len(scan.failed) if args.retry_failed else 0} (of {len(scan.failed)} Failed)"
+        )
+        print(f"Historical/Suppressed rows skipped: {scan.historical_or_suppressed_skipped}")
+        print(f"Sent rows skipped: {scan.sent_skipped}")
+        print(f"Duplicate Canonical Keys (all copies skipped): {len(scan.duplicate_keys)}")
+        print(f"Malformed rows (no Canonical Key/page id): {scan.malformed_rows}")
+        print(f"Selected this run: {len(candidates)}")
+        print()
+
+        dry_run = not args.send
+        print(
+            f"Stage: {'previewing' if dry_run else 'delivering'} {len(candidates)} row(s)...",
+            flush=True,
+        )
+
+        results: list[PublicationDeliveryResult] = []
+        sent = 0
+        failed = 0
+        previewed = 0
+        for row in candidates:
+            result = deliver_publication_notification(
+                active_slack,
+                active_notion,
+                config.data_source_id,
+                row,
+                channel_id=config.papers_channel_id,
+                dry_run=dry_run,
+            )
+            results.append(result)
+            if result.action == "sent":
+                sent += 1
+                print(f"[sent] {row.canonical_key} -> ts={result.ts}")
+            elif result.action == "failed":
+                failed += 1
+                print(
+                    f"[FAILED] {row.canonical_key} ({result.stage}): {result.detail}",
+                    file=sys.stderr,
+                )
+            else:
+                previewed += 1
+                print(f"--- DRY RUN PREVIEW: {row.canonical_key} ---")
+                print(result.detail)
+                print()
+
+        print()
+        print(f"Sent: {sent}")
+        print(f"Failed: {failed}")
+        print(f"Dry-run previews shown: {previewed}")
+        if dry_run:
+            print("Dry run: no Slack messages were sent and no Notion writes were made.")
+
+        if args.error_report is not None:
+            entries = _build_error_report_entries(scan, results)
+            args.error_report.write_text(
+                json.dumps([entry.model_dump() for entry in entries], indent=2)
+            )
+            print()
+            print(f"Error report written: {args.error_report} ({len(entries)} entries)")
+
+        return 1 if failed else 0
+    finally:
+        if owns_notion:
+            active_notion.close()
+        if owns_slack:
+            active_slack.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

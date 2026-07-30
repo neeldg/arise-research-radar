@@ -34,6 +34,16 @@ RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 NOTION_SOURCE_VALUE = "OpenAlex"
 NOTION_NEW_STATUS = "New"
 
+# Initial Slack Status for a genuinely new publication row (see
+# _build_create_properties below). Never used on update — an existing row's
+# Slack Status is always left exactly as it is (see _build_update_properties)
+# so it's never reset by a routine resync, and a historical row imported
+# before Slack activation is never marked Pending merely because it's
+# touched again (see scripts/backfill_publication_slack_status.py for how
+# historical rows get their initial Suppressed value instead).
+NOTION_SLACK_STATUS_PENDING = "Pending"
+NOTION_SLACK_STATUS_SUPPRESSED = "Suppressed"
+
 # Marks the start of the pipeline-owned generated-draft section in a page's body.
 # Deliberately long and distinctive so it is never mistaken for human-authored
 # content. Everything from this block to the end of the page is treated as
@@ -83,6 +93,14 @@ class NotionProperties:
     DRAFTED_DATE = "Drafted Date"
     DRAFT_SOURCE_BASIS = "Draft Source Basis"
     DRAFT_MODEL = "Draft Model"
+
+    # New-publication Slack notification properties (schema via
+    # scripts/update_notion_schema.py; written by upsert_publication below at
+    # create time, and by arise_radar.notifications.publications thereafter).
+    SLACK_STATUS = "Slack Status"
+    SLACK_TIMESTAMP = "Slack Timestamp"
+    SLACK_ERROR = "Slack Error"
+    SLACK_NOTIFIED_DATE = "Slack Notified Date"
 
 
 class NotionConfigError(RuntimeError):
@@ -596,6 +614,22 @@ def _build_create_properties(
             "Not eligible for automatic scheduled drafting — requires human review: "
             + "; ".join(hold_reasons)
         )
+
+    # Same eligibility policy as scheduled drafting above: a non-standard
+    # work type or a probable version/preprint duplicate defaults to
+    # Suppressed instead of Pending — it's already flagged for human review
+    # via Draft Status/Draft Error above, so it shouldn't also land in the
+    # papers Slack channel until a human has looked at it. A standard,
+    # non-duplicate new publication gets Pending, the only place this
+    # pipeline ever sets Slack Status to Pending (see the module-level
+    # comment on NOTION_SLACK_STATUS_PENDING).
+    properties[NotionProperties.SLACK_STATUS] = {
+        "select": {
+            "name": (
+                NOTION_SLACK_STATUS_SUPPRESSED if hold_reasons else NOTION_SLACK_STATUS_PENDING
+            )
+        }
+    }
     return properties
 
 
@@ -622,11 +656,15 @@ def _build_update_properties(
     researchers: set[str],
     version_duplicate_note: str = "",
 ) -> dict:
-    # Status, Detected Date, Draft Status, and Draft Error are intentionally
-    # omitted here: editorial status, the original detection date, and
-    # drafting-pipeline progress are preserved rather than overwritten on
-    # every sync. Editorial Notes is never included anywhere in this module
-    # — it is human-owned.
+    # Status, Detected Date, Draft Status, Draft Error, and Slack Status are
+    # intentionally omitted here: editorial status, the original detection
+    # date, drafting-pipeline progress, and Slack-delivery state are all
+    # preserved rather than overwritten on every sync. An existing row's
+    # Slack Status (Pending/Suppressed/Sent/Failed, or empty if not yet
+    # backfilled) is never touched by a metadata/researcher-name resync —
+    # see arise_radar.notifications.publications for the only code that
+    # changes it after creation. Editorial Notes is never included anywhere
+    # in this module — it is human-owned.
     work_type = classify_work_type(publication)
     properties = _shared_properties(publication, decision, work_type, version_duplicate_note)
     properties[NotionProperties.RESEARCHERS] = _multi_select_value(researchers)

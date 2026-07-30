@@ -693,6 +693,121 @@ def test_shared_authors_preserved_on_a_version_duplicate_row(
     assert props["Draft Status"] == {"select": {"name": "Needs Attention"}}
 
 
+# --- Slack Status: create-only Pending/Suppressed, never touched on update --------
+
+
+def test_new_standard_publication_receives_slack_status_pending(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    created_body: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/data_sources/ds_123/query":
+            return httpx.Response(200, json={"results": []})
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            nonlocal created_body
+            created_body = json.loads(request.content)
+            return httpx.Response(200, json={"id": "page-new-1"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    client = mock_notion_client(handler)
+    pub = _pub(work_type="article")
+
+    result = upsert_publication(client, "ds_123", pub, KEEP, detected_date=date(2026, 1, 2))
+
+    assert result.action == "created"
+    assert created_body["properties"]["Slack Status"] == {"select": {"name": "Pending"}}
+
+
+def test_non_standard_work_type_publication_receives_slack_status_suppressed(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    created_body: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/data_sources/ds_123/query":
+            return httpx.Response(200, json={"results": []})
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            nonlocal created_body
+            created_body = json.loads(request.content)
+            return httpx.Response(200, json={"id": "page-new-1"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    client = mock_notion_client(handler)
+    pub = _pub(
+        title="Stanford Biodesign Digital Health Group",
+        doi="10.5281/zenodo.21358702",
+        canonical_key="doi:10.5281/zenodo.21358702",
+        work_type=None,
+    )
+
+    result = upsert_publication(client, "ds_123", pub, KEEP, detected_date=date(2026, 1, 2))
+
+    assert result.action == "created"
+    assert created_body["properties"]["Slack Status"] == {"select": {"name": "Suppressed"}}
+
+
+def test_version_duplicate_publication_receives_slack_status_suppressed(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    created_body: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/data_sources/ds_123/query":
+            return httpx.Response(200, json={"results": []})
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            nonlocal created_body
+            created_body = json.loads(request.content)
+            return httpx.Response(200, json={"id": "page-new-1"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    client = mock_notion_client(handler)
+    note = (
+        "Possible version duplicate of: doi:10.1/other "
+        "(title similarity 0.95, shared authors: Ethan Goh)"
+    )
+
+    result = upsert_publication(
+        client,
+        "ds_123",
+        _pub(work_type="preprint"),
+        KEEP,
+        detected_date=date(2026, 1, 2),
+        version_duplicate_note=note,
+    )
+
+    assert result.action == "created"
+    assert created_body["properties"]["Slack Status"] == {"select": {"name": "Suppressed"}}
+
+
+def test_existing_publication_update_never_touches_slack_status(
+    mock_notion_client: Callable[..., NotionClient],
+) -> None:
+    """A resync of an existing row (metadata, drafts, relevance, researcher
+    names) must never set or reset Slack Status -- whatever it currently is
+    (Pending/Suppressed/Sent/Failed/empty), it's left exactly as-is."""
+    updated_body: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/data_sources/ds_123/query":
+            return httpx.Response(
+                200, json={"results": [_existing_page("page-1", "Reviewed", ["Ethan Goh"])]}
+            )
+        if request.method == "PATCH" and request.url.path == "/v1/pages/page-1":
+            nonlocal updated_body
+            updated_body = json.loads(request.content)
+            return httpx.Response(200, json={"id": "page-1"})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    client = mock_notion_client(handler)
+    pub = _pub()
+
+    result = upsert_publication(client, "ds_123", pub, KEEP, detected_date=date(2026, 1, 2))
+
+    assert result.action == "updated"
+    assert "Slack Status" not in updated_body["properties"]
+
+
 def test_non_standard_and_version_duplicate_overlap_combines_reasons(
     mock_notion_client: Callable[..., NotionClient],
 ) -> None:
